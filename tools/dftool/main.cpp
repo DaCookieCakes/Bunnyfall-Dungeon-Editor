@@ -4,7 +4,10 @@
 //   dftool <arena2-dir> block <NAME>       one RDB block's model table and objects
 //   dftool <arena2-dir> dungeon <name|id>  one dungeon's block grid
 //   dftool <arena2-dir> model <id>         one ARCH3D model's size, planes and textures
+//   dftool <arena2-dir> models [N]         the N most used models (default 30), with kind and size
+//   dftool <arena2-dir> ports [NAME]       one block's edge openings, or how openings fall across all N/W blocks
 
+#include "catalog/catalog.h"
 #include "formats/arch3d.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
@@ -12,6 +15,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <format>
 #include <cstdio>
 #include <map>
 #include <print>
@@ -26,7 +30,8 @@ using namespace de::formats;
 namespace {
 
 int usage() {
-    std::println(stderr, "usage: dftool <arena2-dir> stats | block <NAME> | dungeon <name|locationId> | model <id>");
+    std::println(stderr, "usage: dftool <arena2-dir> stats | block <NAME> | dungeon <name|locationId> | model <id> |"
+                         " models [N] | ports [NAME]");
     return 2;
 }
 
@@ -250,6 +255,82 @@ int cmdModel(const Arena2& a, std::string_view key) {
     return 0;
 }
 
+int cmdModels(const Arena2& a, std::size_t limit) {
+    auto catalog = de::catalog::Catalog::build(a);
+    if (!catalog) return report(catalog);
+    std::vector<const de::catalog::ModelInfo*> sorted;
+    for (const auto& [_, m] : catalog->models()) sorted.push_back(&m);
+    std::ranges::stable_sort(sorted, [](auto* x, auto* y) { return x->uses > y->uses; });
+    std::map<de::catalog::ModelKind, int> kinds;
+    for (const auto* m : sorted) ++kinds[m->kind];
+    std::print("{} models used by dungeon blocks:", sorted.size());
+    for (const auto& [k, n] : kinds) std::print(" {} {}", n, de::catalog::kindName(k));
+    std::println("");
+    std::println("   id   desc  kind          uses   size x/y/z (block units)");
+    for (std::size_t i = 0; i < std::min(limit, sorted.size()); ++i) {
+        const auto* m = sorted[i];
+        const auto s = m->bounds.size();
+        std::println("{:6}  {:4}  {:12} {:5}   {} x {} x {}", m->id, m->description, de::catalog::kindName(m->kind),
+                     m->uses, s.x, s.y, s.z);
+    }
+    return 0;
+}
+
+int cmdPorts(const Arena2& a, std::string name) {
+    auto catalog = de::catalog::Catalog::build(a);
+    if (!catalog) return report(catalog);
+    if (!name.empty()) {
+        if (!name.ends_with(".RDB")) name += ".RDB";
+        const auto* b = catalog->block(name);
+        if (!b) {
+            std::println(stderr, "error: no block {}", name);
+            return 1;
+        }
+        std::println("{}  role {}  {} ports ({} outside the standard, marked +)", b->name, roleName(b->role),
+                     b->ports.size(), b->otherPorts.size());
+        for (const auto& p : b->ports) {
+            const bool other = std::ranges::find(b->otherPorts, p) != b->otherPorts.end();
+            std::println("  {} {} along {:5}  floor {:6}  width {:4}  ({})", other ? '+' : ' ',
+                         de::catalog::edgeName(p.edge), p.along, p.floor, p.width, p.modelId);
+        }
+        return 0;
+    }
+    // Across all blocks: how closely each follows the standard sockets.
+    std::map<RdbRole, std::pair<int, int>> byRole;   // role -> (blocks, blocks with all 8 sockets)
+    std::map<std::string, int> missing;              // "edge socket" -> blocks without it
+    std::size_t withOther = 0;
+    for (const auto& b : catalog->blocks()) {
+        auto& [count, full] = byRole[b.role];
+        ++count;
+        bool all = true;
+        for (std::size_t e = 0; e < 4; ++e)
+            for (std::size_t k = 0; k < 2; ++k)
+                if (!b.sockets[e][k]) {
+                    all = false;
+                    ++missing[std::format("{} {}", de::catalog::edgeName(static_cast<de::catalog::Edge>(e)),
+                                          de::catalog::kStandardSockets[k].along)];
+                }
+        if (all) ++full;
+        if (!b.otherPorts.empty()) ++withOther;
+    }
+    std::println("standard sockets: along 640 at floor 1280, along 1408 at floor 512, on every edge");
+    for (const auto& [role, counts] : byRole) {
+        std::println("  {:9} {:3} blocks, {:3} open all eight", roleName(role), counts.first, counts.second);
+    }
+    std::print("missing sockets (edge along: blocks):");
+    for (const auto& [k, n] : missing) std::print("  {}: {}", k, n);
+    std::println("\nblocks with openings outside the standard: {}", withOther);
+    for (const auto& b : catalog->blocks()) {
+        if (b.otherPorts.empty()) continue;
+        std::print("  {}:", b.name);
+        for (const auto& p : b.otherPorts) {
+            std::print(" {}{}@{}w{}", de::catalog::edgeName(p.edge), p.along, p.floor, p.width);
+        }
+        std::println("");
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -258,6 +339,8 @@ int main(int argc, char** argv) {
     if (!arena2) return report(arena2);
     const std::string_view cmd = argv[2];
     if (cmd == "stats") return cmdStats(*arena2);
+    if (cmd == "models") return cmdModels(*arena2, argc > 3 ? std::stoul(argv[3]) : 30);
+    if (cmd == "ports") return cmdPorts(*arena2, argc > 3 ? argv[3] : "");
     if (argc < 4) return usage();
     if (cmd == "block") return cmdBlock(*arena2, argv[3]);
     if (cmd == "dungeon") return cmdDungeon(*arena2, argv[3]);

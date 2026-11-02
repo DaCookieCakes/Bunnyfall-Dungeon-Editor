@@ -34,9 +34,16 @@ add_library(de_formats STATIC
 )
 target_link_libraries(de_formats PUBLIC de_core PRIVATE de_warnings)
 
+# ---- catalog: what can be placed, measured from ARENA2 ----
+add_library(de_catalog STATIC
+  src/catalog/space.cpp
+  src/catalog/catalog.cpp
+)
+target_link_libraries(de_catalog PUBLIC de_formats PRIVATE de_warnings)
+
 if(DE_BUILD_TOOLS)
   add_executable(dftool tools/dftool/main.cpp)
-  target_link_libraries(dftool PRIVATE de_formats de_warnings)
+  target_link_libraries(dftool PRIVATE de_catalog de_warnings)
 endif()
 
 if(DE_BUILD_TESTS)
@@ -62,8 +69,10 @@ if(DE_BUILD_TESTS)
     tests/byte_view_test.cpp
     tests/bsa_test.cpp
     tests/arena2_test.cpp
+    tests/space_test.cpp
+    tests/catalog_test.cpp
   )
-  target_link_libraries(de_tests PRIVATE de_formats doctest::doctest de_warnings)
+  target_link_libraries(de_tests PRIVATE de_catalog doctest::doctest de_warnings)
 
   # Data tests read ARENA2 from DE_ARENA2; default to the workspace copy beside this project.
   set(DE_ARENA2 "${CMAKE_SOURCE_DIR}/../DFData/ARENA2" CACHE PATH "ARENA2 directory for data tests")

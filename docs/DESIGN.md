@@ -60,15 +60,30 @@ data contains 187 RDB blocks, 10,237 ARCH3D models and 4,232 dungeons.
   `M` mausoleum, `B` border. Bunnyfall's "smaller dungeons" mode treats every `B` block as a cap and ignores the
   quest markers in it.
 
-### 2.3 Block-to-block connection
+### 2.3 Block-to-block connection: the socket standard
 
-Measured across N and W blocks, architecture crosses block edges mostly at **640 and 1408 units along an edge**.
-These two points mirror each other (1408 = 2048 − 640), and together they are the large majority of crossings. A
-smaller set crosses at 128, 1152, 1664 and 1920. Since blocks can't rotate, a standard block has to be usable on any
-side. In practice that means **two doorway ports per side, at fixed positions**.
+Measured with the catalog's port detection (§4), which cuts each placed piece's real faces with the four edge
+planes:
 
-Design consequence: the editor detects ports from a block's geometry rather than hardcoding them, but treats 640 and
-1408 as the standard ports. It warns when a neighbour has a port that isn't matched on the touching side.
+- **Every edge has two sockets**, the same on all four sides:
+  - the **upper socket** at 640 along the edge, floor 1280 (editor Y);
+  - the **lower socket** at 1408 along the edge, floor 512.
+- Each socket is a doorway **50 units (1.25 m) wide**.
+- **All 138 normal, wet and border blocks open all eight sockets.** This is how classic dungeons connect: any block
+  fits next to any other, on any side, with no rotation.
+- Quest (S) blocks open 13 of 40 completely, and mausoleum (M) blocks none. They are special-built and usually sit
+  where fewer connections are needed.
+- 41 blocks also have architecture crossing an edge somewhere else, mostly wide rooms and caves (122 to 512 units)
+  reaching into the neighbouring block's empty space. These are **overhangs**, not connections.
+
+Design consequence: the dungeon-level snap is "every block offers the 8 standard sockets". Validation checks that
+facing sockets are both open or both absent (§8). An overhang is allowed, but warns when it collides with the
+neighbour's geometry.
+
+Model classification feeding this: architecture is the families C (corridors, junctions, stairs), R (large rooms),
+O (odd-shaped rooms), three-digit descriptions (rooms named by size in 128-unit cells less one: `000` is one cell,
+`012` two by three), and any other model at least 96 units in every direction. With that, port detection agrees with
+counting every model in the block.
 
 ### 2.4 Inside a block
 
@@ -194,8 +209,8 @@ C++23 (for `std::expected`), CMake. Linux is the primary platform; avoid anythin
 core/        no dependencies: math (fixed-point-aware), ids, result/error types, logging
 formats/     ARENA2 readers: BSA, ARCH3D, BLOCKS (RDB), MAPS (dungeon section), TEXTURE.*, PAL/COL,
              MONSTER/encounter tables. Read-only, no rendering or UI includes.
-catalog/     what can be placed: models with bounds, ports and descriptions; flats; enemy types;
-             classic blocks as templates. Built from formats/, cached on disk.
+catalog/     what can be placed: models with bounds, kinds and geometry; block summaries with ports and sockets;
+             later flats and enemy types. Built from formats/ at start-up (about 40 ms; no cache needed).
 model/       the editor document (§3), plus commands with undo/redo. Holds no file-format knowledge.
 snap/        grid, port matching and rotation rules (§2.3, §2.4). Pure functions over model/ types.
 logic/       the logic graph and its compiler to action chains (§5).
@@ -325,7 +340,8 @@ Run before every export. Errors block export; warnings don't.
 - A custom enemy id with no definition, when custom enemies are disabled.
 
 **Warnings**
-- An unmatched port between neighbours (§2.3).
+- A socket open on one side of a block seam and closed on the other (§2.3).
+- An overhang (architecture crossing an edge outside a socket) that collides with the neighbour's geometry.
 - A piece off the 64-unit grid or at a non-90° rotation (allowed, just flagged).
 - A water enemy in a block with no water; a fixed enemy that will be downgraded at low party levels (§2.7).
 - Quest markers only in `B` blocks; doors closer than 1.4 m (they will be merged).
@@ -336,9 +352,10 @@ Run before every export. Errors block export; warnings don't.
 
 1. **Readers + catalog.** C++ versions of the BSA / ARCH3D / RDB / MAPS readers. A CLI that dumps a block and
    reproduces the `dfprobe.py` numbers. Tests against the real ARENA2.
-   *Status (2026-11-02):* readers, `dftool` and tests are done; every classic block, dungeon and used model parses.
-   Still to do: the catalog (model bounds, port detection, descriptions). Texture and palette readers moved to
-   milestone 2, where the viewer needs them.
+   *Status (2026-11-02): done.* Readers, catalog (model kinds and geometry, port detection, the socket standard in
+   §2.3), `dftool` and tests. Every classic block, dungeon and used model parses. Texture and palette readers moved to
+   milestone 2, where the viewer needs them. Sorting the remaining "prop" description families (X, B, T, M, ...)
+   into palette groups is left for milestone 5.
    *Known gaps, needed before milestone 3:* DFU's per-block repairs (`FixRdbData`, a handful of N/W blocks) and
    Bunnyfall's ARCH3D byte patches are not applied yet. A patch's base block must match what Bunnyfall reads, so both
    must be ported before patches are written.
