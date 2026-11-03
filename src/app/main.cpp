@@ -2,11 +2,12 @@
 //
 //   dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME]
 //                  [--screenshot OUT.png [--size WxH] [--top] [--camera x,y,z,yawDeg,pitchDeg]]
-//                  [--frames N]
+//                  [--frames N] [--patches DIR]
 //
 // ARENA2 comes from --arena2, else DE_ARENA2, else ../DFData/ARENA2. With --screenshot the view is drawn once,
 // offscreen, saved and the program exits. --frames N runs the normal loop, panels and all, in a hidden window for N
-// frames and exits: a smoke test of the whole application without showing anything.
+// frames and exits: a smoke test of the whole application without showing anything. --patches is where edited blocks
+// are saved (default: ../Bunnyfall/vendor/bunnyfall-dungeons/WorldDataPatches, when ../Bunnyfall/vendor exists).
 
 #include "app/viewer.h"
 #include "core/png.h"
@@ -19,6 +20,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <numbers>
 #include <print>
 #include <string>
@@ -34,6 +36,9 @@ struct Options {
     bool top = false;
     std::vector<double> camera;
     int frames = 0;   // > 0: run this many frames hidden, then exit
+    std::string patches;
+    std::string checkEdit;
+    bool ui = false;          // draw the panels into the screenshot too   // a folder: run the scripted edit check, saving its patch there
 };
 
 bool parse(int argc, char** argv, Options& o) {
@@ -47,7 +52,10 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--screenshot" && (v = next())) o.screenshot = v;
         else if (a == "--size" && (v = next())) std::sscanf(v, "%dx%d", &o.width, &o.height);
         else if (a == "--top") o.top = true;
+        else if (a == "--ui") o.ui = true;
         else if (a == "--frames" && (v = next())) o.frames = std::atoi(v);
+        else if (a == "--patches" && (v = next())) o.patches = v;
+        else if (a == "--check-edit" && (v = next())) o.checkEdit = v;
         else if (a == "--camera" && (v = next())) {
             double x, y, z, yaw, pitch;
             if (std::sscanf(v, "%lf,%lf,%lf,%lf,%lf", &x, &y, &z, &yaw, &pitch) != 5) return false;
@@ -82,7 +90,18 @@ int screenshot(de::app::Viewer& viewer, const Options& o) {
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return fatal("offscreen framebuffer incomplete");
 
     viewer.setViewSize(o.width, o.height);
+    if (o.ui) {
+        // Two frames: the first lays the windows out, the second is the one drawn.
+        for (int i = 0; i < 2; ++i) {
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplSDL3_NewFrame();
+            ImGui::NewFrame();
+            viewer.drawUi();
+            ImGui::Render();
+        }
+    }
     viewer.drawScene(o.width, o.height);
+    if (o.ui) ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(o.width) * static_cast<std::size_t>(o.height) * 4);
     glReadPixels(0, 0, o.width, o.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
     // OpenGL reads bottom row first; PNG wants the top first.
@@ -108,7 +127,7 @@ int main(int argc, char** argv) {
     if (!parse(argc, argv, o)) {
             std::println(stderr, "usage: dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME] "
                              "[--screenshot OUT.png [--size WxH] [--top] [--camera x,y,z,yawDeg,pitchDeg]] "
-                             "[--frames N]");
+                             "[--frames N] [--patches DIR] [--check-edit DIR] [--ui]");
         return 2;
     }
     auto arena2 = de::formats::Arena2::open(o.arena2);
@@ -120,7 +139,7 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    const bool offscreen = !o.screenshot.empty() || o.frames > 0;
+    const bool offscreen = !o.screenshot.empty() || o.frames > 0 || !o.checkEdit.empty();
     SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (offscreen) flags |= SDL_WINDOW_HIDDEN;
     SDL_Window* window = SDL_CreateWindow("Bunnyfall Dungeon Editor", o.width, o.height, flags);
@@ -143,6 +162,14 @@ int main(int argc, char** argv) {
         auto viewer = de::app::Viewer::create(*arena2);
         if (!viewer) return fatal(viewer.error().message);
         auto& v = **viewer;
+        std::string patches = o.patches;
+        if (patches.empty() && std::filesystem::is_directory("../Bunnyfall/vendor")) {
+            patches = "../Bunnyfall/vendor/bunnyfall-dungeons/WorldDataPatches";
+        }
+        if (!patches.empty()) {
+            v.setPatchFolder(std::filesystem::absolute(patches).lexically_normal());
+            if (!offscreen) std::println("patches: {}", std::filesystem::absolute(patches).lexically_normal().string());
+        }
 
         de::Result<void> opened{};
         if (!o.block.empty()) {
@@ -161,19 +188,25 @@ int main(int argc, char** argv) {
             c.pitch = o.camera[4] * std::numbers::pi / 180;
         }
 
+        if (!o.checkEdit.empty()) {
+            v.setViewSize(o.width, o.height);
+            auto log = v.checkEdit(o.checkEdit);
+            if (!log) return fatal("edit check: " + log.error().message);
+            std::print("{}", *log);
+        }
         if (!o.screenshot.empty()) {
             status = screenshot(v, o);
-        } else {
-            bool running = true;
+        } else if (o.checkEdit.empty()) {
             int frame = 0;
             Uint64 last = SDL_GetTicksNS();
-            while (running && (o.frames <= 0 || frame++ < o.frames)) {
+            while (!v.wantsQuit() && (o.frames <= 0 || frame++ < o.frames)) {
                 SDL_Event event;
                 while (SDL_PollEvent(&event)) {
                     ImGui_ImplSDL3_ProcessEvent(&event);
-                    if (event.type == SDL_EVENT_QUIT) running = false;
+                    // Closing asks first when there are unsaved edits.
+                    if (event.type == SDL_EVENT_QUIT) v.requestQuit();
                     if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
-                        running = false;
+                        v.requestQuit();
                     }
                     v.handleEvent(event, window);
                 }

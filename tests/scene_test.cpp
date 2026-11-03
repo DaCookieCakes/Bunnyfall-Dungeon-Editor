@@ -39,7 +39,7 @@ TEST_CASE("ARENA2: Castle Daggerfall's dungeon assembles on its grid") {
     }
 }
 
-TEST_CASE("blockScene keeps or drops the exit door") {
+TEST_CASE("the exit door shows in the starting block only") {
     de::formats::RdbBlock block;
     block.width = block.height = 1;
     block.modelRefs.resize(de::formats::kRdbModelRefSlots);
@@ -47,6 +47,9 @@ TEST_CASE("blockScene keeps or drops the exit door") {
     de::formats::RdbObject obj;
     obj.resource = de::formats::RdbModel{};
     block.roots.push_back({0, {obj}});
-    CHECK(blockScene("X", block, true).models.size() == 1);
-    CHECK(blockScene("X", block, false).models.empty());
+    auto scene = blockScene("X", block);
+    CHECK(scene.models.size() == 1);   // a lone block shows as a starting block
+    scene.blocks[0].isStartingBlock = false;
+    rebuildInstances(scene);
+    CHECK(scene.models.empty());       // anywhere else the exit door is not drawn
 }

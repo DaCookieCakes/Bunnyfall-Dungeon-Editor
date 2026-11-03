@@ -72,6 +72,11 @@ const GpuTexture& TextureCache::get(int archiveNumber, int record) {
     return textures_.emplace(key, upload(img->width, img->height, formats::toRgba(*img, palette_, true))).first->second;
 }
 
+std::size_t TextureCache::recordCount(int archiveNumber) {
+    const auto* a = archive(archiveNumber);
+    return a ? a->recordCount() : 0;
+}
+
 std::pair<double, double> TextureCache::flatSize(int archiveNumber, int record) {
     const auto* a = archive(archiveNumber);
     if (!a || record < 0 || static_cast<std::size_t>(record) >= a->recordCount()) return {32, 32};

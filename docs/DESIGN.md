@@ -122,8 +122,8 @@ an optional action record.
 
 | 199 record | Meaning | Classic count |
 |---|---|---|
-| 8 | Enter marker | 10 |
-| 10 | Start marker. Also carries the block's water level (`SoundIndex·−8`, 0 means none) and the castle flag (`Magnitude≠0`). | 167 |
+| 8 | Enter marker: where a start *inside* the dungeon puts the player (a new game, a load, a respawn, a quest teleport). Wins over the start marker for those. | 10 |
+| 10 | Start marker: where a player walking in through the entrance arrives, and the fallback when there is no enter marker. Also carries the block's water level (`SoundIndex·−8`, 0 means none) and the castle flag (`Magnitude≠0`). | 167 |
 | 11 | Quest spawn marker | 144 |
 | 15 | Random enemy. `Flags` = encounter slot, 0 means reroll. | 2,195 |
 | 16 | Fixed enemy. `FactionOrMobileId & 0xFF` = enemy type. Action 99 = passive. Flags: 1 = female, 2 = male. | 369 |
@@ -378,10 +378,20 @@ Run before every export. Errors block export; warnings don't.
    trailing NULs only); RDB blocks serialise to World Data JSON; canonical form, sha256, patch ops and the diff are
    ported. Proof against shipped data: Aquatic Sprites' three RDB patches rebuild to the author's sha256, and the
    editor's own patches of the same blocks come out with identical ops. `dftool export-block / make-patch /
-   rebuild-patch` drive it by hand. Left: the Bunnyfall-side mod declaration (§6.4) and loading a patch in the game.
+   rebuild-patch` drive it by hand. The Bunnyfall side is in (local copy, 2026-11-02): the `bunnyfall-dungeons`
+   mod (modSettings.js, room-owned in onlineLane.js, a Features row, the Dungeons settings section) and a test patch,
+   `vendor/bunnyfall-dungeons/WorldDataPatches/S0000999.RDB.json` (six braziers round Privateer's Hold's start).
+   Left: seeing it in the game.
    Bunnyfall's ARCH3D byte patches are still unported (they change how a few models draw, not what is exported).
 4. **Block-level authoring.** Dungeon grid, place blocks, port checks, border auto-cap, new-location export.
 5. **Piece-level authoring.** Snap grid, gizmos, undo/redo, prefabs, entity placement, validation panel.
+   *Status (2026-11-03): first part done, ahead of milestone 4.* Editing one classic block in the viewer: placing
+   markers, enemies (random and fixed, with type, gender, passive, slot), treasure, scenery and lights on the surface
+   under the pointer; selecting, moving (grab, nudge, typed positions), turning models, duplicating, deleting; undo and
+   redo; saving as a patch to Bunnyfall's mod folder and reopening it. New objects take save identities from 900000 up
+   and keep them. `src/edit/` holds the rules (no UI), `src/app/viewer_edit.cpp` the panels. Not yet: placing
+   architecture pieces, a model palette, prefabs, rotation gizmos, validation, and editing blocks other than classic
+   ones (new blocks come with milestone 4).
 6. **Logic graph.** Graph editor and compiler to action chains; door and lock settings.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).

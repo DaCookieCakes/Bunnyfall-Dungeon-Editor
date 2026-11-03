@@ -1,5 +1,8 @@
 #include "render/renderer.h"
 
+#include <cmath>
+#include <vector>
+
 namespace de::render {
 
 namespace {
@@ -98,17 +101,38 @@ Result<Renderer> Renderer::create(TextureCache& textures, ModelCache& models) {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
     glBindVertexArray(0);
+
+    // The light gizmo: a soft yellow disc with a dark rim, made here rather than taken from the game's art.
+    constexpr int n = 32;
+    std::vector<std::uint8_t> rgba(n * n * 4, 0);
+    for (int y = 0; y < n; ++y)
+        for (int x = 0; x < n; ++x) {
+            const double dx = (x + 0.5) / n * 2 - 1, dy = (y + 0.5) / n * 2 - 1, d = std::sqrt(dx * dx + dy * dy);
+            if (d > 1) continue;
+            const auto i = static_cast<std::size_t>((y * n + x) * 4);
+            const bool rim = d > 0.82;
+            rgba[i] = rim ? 60 : 255;
+            rgba[i + 1] = rim ? 45 : static_cast<std::uint8_t>(230 - 60 * d);
+            rgba[i + 2] = rim ? 10 : static_cast<std::uint8_t>(120 - 100 * d);
+            rgba[i + 3] = 255;
+        }
+    glGenTextures(1, &r.lightIcon_);
+    glBindTexture(GL_TEXTURE_2D, r.lightIcon_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     return r;
 }
 
 Renderer::Renderer(Renderer&& o) noexcept
     : textures_(o.textures_), models_(o.models_), modelShader_(std::move(o.modelShader_)),
       billboardShader_(std::move(o.billboardShader_)), quadVao_(std::exchange(o.quadVao_, 0)),
-      quadVbo_(std::exchange(o.quadVbo_, 0)) {}
+      quadVbo_(std::exchange(o.quadVbo_, 0)), lightIcon_(std::exchange(o.lightIcon_, 0)) {}
 
 Renderer::~Renderer() {
     if (quadVao_) glDeleteVertexArrays(1, &quadVao_);
     if (quadVbo_) glDeleteBuffers(1, &quadVbo_);
+    if (lightIcon_) glDeleteTextures(1, &lightIcon_);
 }
 
 void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, int height, const DrawOptions& options,
@@ -179,6 +203,17 @@ void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, 
         glUniform3f(uCentre, float(flat.position.x), float(flat.position.y), float(flat.position.z));
         glUniform2f(uSize, float(w), float(h));
         glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+    if (options.lights) {
+        glBindTexture(GL_TEXTURE_2D, lightIcon_);
+        glUniform2f(uSize, float(kLightGizmoSize), float(kLightGizmoSize));
+        for (std::size_t i = 0; i < scene.lights.size(); ++i) {
+            const auto& light = scene.lights[i];
+            const bool selected = selection && selection->kind == scene::Hit::Kind::Light && selection->index == i;
+            glUniform4fv(uFlatTint, 1, selected ? kSelectionTint : kNoTint);
+            glUniform3f(uCentre, float(light.position.x), float(light.position.y), float(light.position.z));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
     }
     glBindVertexArray(0);
 }

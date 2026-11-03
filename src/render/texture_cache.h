@@ -34,6 +34,9 @@ public:
     /// A flat's drawn size in block units: the texture's size grown by its record's scale.
     std::pair<double, double> flatSize(int archive, int record);
 
+    /// How many records an archive has (0 if it will not load).
+    std::size_t recordCount(int archive);
+
     /// Problems met so far (missing archives, bad records), one line each.
     [[nodiscard]] const std::vector<std::string>& problems() const { return problems_; }
 

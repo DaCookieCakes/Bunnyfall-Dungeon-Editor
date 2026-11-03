@@ -14,9 +14,10 @@ struct Ray {
 };
 
 struct Hit {
-    enum class Kind { Model, Flat } kind = Kind::Model;
-    std::size_t index = 0;    ///< Into Scene::models or Scene::flats.
+    enum class Kind { Model, Flat, Light } kind = Kind::Model;
+    std::size_t index = 0;    ///< Into Scene::models, Scene::flats or Scene::lights.
     double distance = 0;      ///< Block units along the ray.
+    catalog::Vec3 normal;     ///< The surface hit, facing back along the ray (a flat's faces the viewer).
 };
 
 /// The mesh drawn for a model id, or null when it has none.
@@ -27,9 +28,12 @@ using FlatSizeLookup = std::function<std::pair<double, double>(int archive, int 
 struct PickOptions {
     bool flats = true;     ///< Scenery and other visible flats.
     bool markers = true;   ///< Editor markers (archive 199).
+    bool models = true;
+    std::optional<ObjectRef> ignore;   ///< One object the ray passes through (one being moved).
+    double lightSize = 0;              ///< > 0: lights are picked as spheres of this diameter.
 };
 
-/// The nearest model triangle or flat the ray meets. Triangles count from both sides.
+/// The nearest model triangle, flat or light the ray meets. Triangles count from both sides.
 std::optional<Hit> pick(const Scene& scene, const Ray& ray, const MeshLookup& meshes, const FlatSizeLookup& flatSize,
                         PickOptions options = {});
 

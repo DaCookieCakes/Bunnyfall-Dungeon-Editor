@@ -64,8 +64,12 @@ FetchContent_MakeAvailable(nlohmann_json)
 add_library(nlohmann_json_header INTERFACE)
 target_include_directories(nlohmann_json_header SYSTEM INTERFACE "${nlohmann_json_SOURCE_DIR}/single_include")
 
-add_library(de_export STATIC src/export/dfu_json.cpp src/export/world_data_patch.cpp)
+add_library(de_export STATIC src/export/dfu_json.cpp src/export/world_data_patch.cpp src/export/patch_folder.cpp)
 target_link_libraries(de_export PUBLIC de_formats nlohmann_json_header PRIVATE de_warnings)
+
+# ---- edit: changing a block (entities, undo, save identities); no GPU, no UI ----
+add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp)
+target_link_libraries(de_edit PUBLIC de_catalog PRIVATE de_warnings)
 
 # ---- the application: window, renderer, UI ----
 if(DE_BUILD_APP)
@@ -101,8 +105,9 @@ if(DE_BUILD_APP)
   add_executable(dungeon_editor
     src/app/main.cpp
     src/app/viewer.cpp
+    src/app/viewer_edit.cpp
   )
-  target_link_libraries(dungeon_editor PRIVATE de_render de_catalog imgui SDL3::SDL3 de_warnings)
+  target_link_libraries(dungeon_editor PRIVATE de_render de_catalog de_edit de_export imgui SDL3::SDL3 de_warnings)
 endif()
 
 if(DE_BUILD_TOOLS)
@@ -142,8 +147,9 @@ if(DE_BUILD_TESTS)
     tests/texture_table_test.cpp
     tests/camera_test.cpp
     tests/export_test.cpp
+    tests/edit_test.cpp
   )
-  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export doctest::doctest de_warnings)
+  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit doctest::doctest de_warnings)
 
   # Data tests read ARENA2 from DE_ARENA2; default to the workspace copy beside this project.
   set(DE_ARENA2 "${CMAKE_SOURCE_DIR}/../DFData/ARENA2" CACHE PATH "ARENA2 directory for data tests")

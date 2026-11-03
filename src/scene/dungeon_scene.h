@@ -9,6 +9,8 @@
 #include "scene/texture_table.h"
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,7 @@ struct ObjectRef {
     std::size_t block = 0;    ///< Index into Scene::blocks.
     std::size_t root = 0;
     std::size_t object = 0;   ///< Index within the root.
+    friend bool operator==(const ObjectRef&, const ObjectRef&) = default;
 };
 
 struct ModelInstance {
@@ -47,8 +50,11 @@ struct LightInstance {
     ObjectRef ref;
 };
 
+inline constexpr std::size_t kNoBsaIndex = static_cast<std::size_t>(-1);
+
 struct SceneBlock {
     std::string name;
+    std::size_t bsaIndex = kNoBsaIndex;   ///< Its BLOCKS.BSA record (what a patch of it is made against).
     catalog::Vec3 origin;    ///< Editor space; the block's (0,0,0) corner.
     bool isStartingBlock = false;
     formats::RdbBlock data;
@@ -64,12 +70,22 @@ struct Scene {
     std::vector<LightInstance> lights;
 };
 
-/// One block on its own at the origin. `allowExitDoor` keeps model 70300, which only the starting block shows.
-Scene blockScene(std::string name, formats::RdbBlock block, bool allowExitDoor = true);
+/// Where a scene's blocks come from: the classic block by default, or (say) a saved patch of it.
+using BlockSource = std::function<Result<formats::RdbBlock>(std::size_t bsaIndex)>;
+
+/// One block on its own at the origin, shown as a starting block (model 70300, the exit door, included).
+Scene blockScene(std::string name, formats::RdbBlock block, std::size_t bsaIndex = kNoBsaIndex);
 
 /// A whole classic dungeon: every block at (x * 2048, 0, z * 2048), the exit door in the starting block only, and
 /// the dungeon's classic texture table from its location id and the climate at its map pixel.
 Result<Scene> dungeonScene(const formats::DungeonRecord& dungeon, const formats::BsaArchive& blocks,
-                           const formats::PakMap& climate);
+                           const formats::PakMap& climate, const BlockSource& source = {});
+
+/// Rebuilds the scene's models, flats and lights from its blocks (after a block's data changed).
+void rebuildInstances(Scene& scene);
+
+/// The instance drawn for an object, if it is drawn.
+std::optional<std::size_t> modelIndexOf(const Scene& scene, const ObjectRef& ref);
+std::optional<std::size_t> flatIndexOf(const Scene& scene, const ObjectRef& ref);
 
 } // namespace de::scene

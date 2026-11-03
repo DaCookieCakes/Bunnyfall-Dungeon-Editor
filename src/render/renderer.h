@@ -14,11 +14,14 @@ namespace de::render {
 struct DrawOptions {
     bool flats = true;      ///< Scenery flats (torches, bones, ...).
     bool markers = true;    ///< Editor markers (archive 199): start, enemies, treasure, ...
+    bool lights = true;     ///< Light gizmos (lights have no picture of their own in the game).
     bool cullBackFaces = true;
     bool wireframe = false;
 };
 
-/// Draws a scene: textured models, billboarded flats and markers, the selection tinted.
+/// Draws a scene: textured models, billboarded flats and markers, light gizmos, the selection tinted.
+/// Light gizmos are this size, in block units (picking uses the same).
+inline constexpr double kLightGizmoSize = 16;
 class Renderer {
 public:
     static Result<Renderer> create(TextureCache& textures, ModelCache& models);
@@ -39,6 +42,7 @@ private:
     ShaderProgram modelShader_;
     ShaderProgram billboardShader_;
     GLuint quadVao_ = 0, quadVbo_ = 0;
+    GLuint lightIcon_ = 0;   // the gizmo drawn for a light
 };
 
 } // namespace de::render

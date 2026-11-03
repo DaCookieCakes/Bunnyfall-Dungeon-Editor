@@ -70,8 +70,33 @@ TEST_CASE("pick sees flats and markers unless told not to") {
     CHECK(hit->kind == Hit::Kind::Flat);
     CHECK(hit->index == 1);
     CHECK(hit->distance == doctest::Approx(26));
-    hit = pick(scene, ray, none, kSize, {.flats = true, .markers = false});
+    hit = pick(scene, ray, none, kSize, {.flats = true, .markers = false, .models = true, .ignore = std::nullopt, .lightSize = 0});
     REQUIRE(hit);
     CHECK(hit->index == 0);
-    CHECK_FALSE(pick(scene, ray, none, kSize, {.flats = false, .markers = false}));
+    CHECK_FALSE(pick(scene, ray, none, kSize, {.flats = false, .markers = false, .models = true, .ignore = std::nullopt, .lightSize = 0}));
+}
+
+TEST_CASE("pick reports the surface normal facing the viewer, and can ignore one object") {
+    const auto mesh = triangle();   // in the XY plane, so its normal is along Z
+    const MeshLookup meshes = [&](std::uint32_t id) { return id == 1 ? &mesh : nullptr; };
+    const auto scene = sceneWith({{1, Transform{{}, {0, 0, 100}}, {0, 0, 7}}});
+    auto hit = pick(scene, {{0, 0, 0}, {0, 0, 1}}, meshes, kSize);
+    REQUIRE(hit);
+    CHECK(hit->normal.z == doctest::Approx(-1));
+    hit = pick(scene, {{0, 0, 200}, {0, 0, -1}}, meshes, kSize);
+    REQUIRE(hit);
+    CHECK(hit->normal.z == doctest::Approx(1));
+    CHECK_FALSE(pick(scene, {{0, 0, 0}, {0, 0, 1}}, meshes, kSize, {.flats = true, .markers = true, .models = true, .ignore = ObjectRef{0, 0, 7}, .lightSize = 0}));
+}
+
+TEST_CASE("pick finds lights only when asked to") {
+    const MeshLookup none = [](std::uint32_t) { return nullptr; };
+    Scene scene;
+    scene.lights.push_back({{0, 0, 40}, 100, {0, 0, 3}});
+    const Ray ray{{0, 0, 0}, {0, 0, 1}};
+    CHECK_FALSE(pick(scene, ray, none, kSize));
+    const auto hit = pick(scene, ray, none, kSize, {.flats = true, .markers = true, .models = true, .ignore = std::nullopt, .lightSize = 16});
+    REQUIRE(hit);
+    CHECK(hit->kind == Hit::Kind::Light);
+    CHECK(hit->distance == doctest::Approx(32));
 }

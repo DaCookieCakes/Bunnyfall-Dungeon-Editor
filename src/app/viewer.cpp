@@ -16,7 +16,8 @@ namespace {
 
 constexpr double kEyeHeight = 24;   // block units above a start marker's centre
 constexpr int kEditorFlatArchive = 199;
-constexpr int kStartMarkerRecord = 10;
+constexpr int kStartMarkerRecord = 10;   // where a player walking in through the entrance arrives
+constexpr int kEnterMarkerRecord = 8;    // where a new game (or any start inside the dungeon) puts the player
 
 std::string lower(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -91,14 +92,27 @@ std::optional<std::size_t> Viewer::findDungeon(const std::string& key) const {
 }
 
 void Viewer::setScene(scene::Scene scene) {
+    endEdit();
     scene_ = std::move(scene);
-    selection_.reset();
+    selected_.reset();
     cameraToStart();
+}
+
+scene::BlockSource Viewer::blockSource() const {
+    return [this](std::size_t bsaIndex) -> Result<formats::RdbBlock> {
+        if (patches_) {
+            auto patched = patches_->load(arena2_.blocks, bsaIndex);
+            if (!patched) return std::unexpected(patched.error());
+            if (*patched) return std::move(**patched);
+        }
+        return formats::readClassicRdbBlock(arena2_.blocks, bsaIndex);
+    };
 }
 
 Result<void> Viewer::openDungeon(std::size_t index) {
     if (index >= dungeons_.size()) return fail("no dungeon " + std::to_string(index));
-    auto scene = scene::dungeonScene(dungeons_[index], arena2_.blocks, arena2_.climate);
+    if (hasUnsavedEdits()) return fail("Save or discard the edits to " + edit_->name() + " first.");
+    auto scene = scene::dungeonScene(dungeons_[index], arena2_.blocks, arena2_.climate, blockSource());
     if (!scene) return std::unexpected(scene.error());
     setScene(std::move(*scene));
     const auto& t = scene_.textures.archives;
@@ -112,24 +126,33 @@ Result<void> Viewer::openBlock(const std::string& name) {
     const auto full = name.ends_with(".RDB") ? name : name + ".RDB";
     const auto index = arena2_.blocks.findByName(full);
     if (!index) return fail("no block " + full);
-    auto block = formats::readClassicRdbBlock(arena2_.blocks, *index);
+    if (hasUnsavedEdits()) return fail("Save or discard the edits to " + edit_->name() + " first.");
+    auto block = blockSource()(*index);
     if (!block) return std::unexpected(block.error());
-    setScene(scene::blockScene(full, std::move(*block)));
+    setScene(scene::blockScene(full, std::move(*block), *index));
     status_ = std::format("{}: {} models, {} flats", full, scene_.models.size(), scene_.flats.size());
     return {};
 }
 
-void Viewer::cameraToStart() {
+bool Viewer::cameraToMarker(int record) {
     for (const auto& flat : scene_.flats) {
-        if (flat.archive == kEditorFlatArchive && flat.record == kStartMarkerRecord &&
-            scene_.blocks[flat.ref.block].isStartingBlock) {
+        if (flat.archive == kEditorFlatArchive && flat.record == record && scene_.blocks[flat.ref.block].isStartingBlock) {
             camera_.position = {flat.position.x, flat.position.y + kEyeHeight, flat.position.z};
             camera_.yaw = 0;
             camera_.pitch = 0;
-            return;
+            return true;
         }
     }
-    cameraToTop();
+    return false;
+}
+
+void Viewer::cameraToStart() {
+    // As the game decides a start inside the dungeon: the enter marker, else the start marker.
+    if (!cameraToMarker(kEnterMarkerRecord) && !cameraToMarker(kStartMarkerRecord)) cameraToTop();
+}
+
+void Viewer::cameraToEntrance() {
+    if (!cameraToMarker(kStartMarkerRecord)) cameraToTop();
 }
 
 void Viewer::cameraToTop() {
@@ -147,14 +170,45 @@ void Viewer::cameraToTop() {
     camera_.lookAt(centre);
 }
 
-void Viewer::pickAt(double x, double y) {
+std::optional<scene::Hit> Viewer::pickAt(double x, double y, scene::PickOptions options) {
     const auto ray = camera_.rayThrough(x, y, viewWidth_, viewHeight_);
     const scene::MeshLookup meshes = [this](std::uint32_t id) -> const geometry::ModelMesh* {
         const auto* m = models_.get(id);
         return m ? &m->mesh : nullptr;
     };
     const scene::FlatSizeLookup sizes = [this](int a, int r) { return textures_.flatSize(a, r); };
-    selection_ = scene::pick(scene_, ray, meshes, sizes, {drawOptions_.flats, drawOptions_.markers});
+    return scene::pick(scene_, ray, meshes, sizes, options);
+}
+
+scene::PickOptions Viewer::selectOptions() const {
+    return {.flats = drawOptions_.flats,
+            .markers = drawOptions_.markers,
+            .models = true,
+            .ignore = std::nullopt,
+            .lightSize = drawOptions_.lights ? render::kLightGizmoSize : 0};
+}
+
+void Viewer::select(std::optional<scene::Hit> hit) {
+    if (!hit) {
+        selected_.reset();
+        return;
+    }
+    switch (hit->kind) {
+        case scene::Hit::Kind::Model: selected_ = scene_.models[hit->index].ref; break;
+        case scene::Hit::Kind::Flat: selected_ = scene_.flats[hit->index].ref; break;
+        case scene::Hit::Kind::Light: selected_ = scene_.lights[hit->index].ref; break;
+    }
+    selectedDistance_ = hit->distance;
+}
+
+std::optional<scene::Hit> Viewer::selectionHit() const {
+    if (!selected_) return std::nullopt;
+    if (const auto i = scene::modelIndexOf(scene_, *selected_)) return scene::Hit{scene::Hit::Kind::Model, *i, 0, {}};
+    if (const auto i = scene::flatIndexOf(scene_, *selected_)) return scene::Hit{scene::Hit::Kind::Flat, *i, 0, {}};
+    for (std::size_t i = 0; i < scene_.lights.size(); ++i) {
+        if (scene_.lights[i].ref == *selected_) return scene::Hit{scene::Hit::Kind::Light, i, 0, {}};
+    }
+    return std::nullopt;
 }
 
 void Viewer::handleEvent(const SDL_Event& event, SDL_Window* window) {
@@ -163,11 +217,25 @@ void Viewer::handleEvent(const SDL_Event& event, SDL_Window* window) {
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
             if (io.WantCaptureMouse) break;
             if (event.button.button == SDL_BUTTON_RIGHT) {
+                if (grabbing_) {
+                    endGrab(false);   // right-click cancels a move
+                    break;
+                }
+                if (placing_) {
+                    placing_.reset();   // and stops placing
+                    break;
+                }
                 looking_ = true;
                 SDL_SetWindowRelativeMouseMode(window, true);
             } else if (event.button.button == SDL_BUTTON_LEFT) {
-                pickAt(event.button.x, event.button.y);
+                if (grabbing_) endGrab(true);
+                else if (placing_) placeAt(event.button.x, event.button.y);
+                else select(pickAt(event.button.x, event.button.y, selectOptions()));
             }
+            break;
+        case SDL_EVENT_KEY_DOWN:
+            if (io.WantCaptureKeyboard) break;
+            handleEditKey(event.key);
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
             if (event.button.button == SDL_BUTTON_RIGHT && looking_) {
@@ -176,6 +244,11 @@ void Viewer::handleEvent(const SDL_Event& event, SDL_Window* window) {
             }
             break;
         case SDL_EVENT_MOUSE_MOTION:
+            if (!looking_) {
+                mouseX_ = event.motion.x;
+                mouseY_ = event.motion.y;
+                if (grabbing_) grabTo(mouseX_, mouseY_);
+            }
             if (looking_) {
                 constexpr double kTurn = 0.0035;   // radians per pixel
                 camera_.yaw += event.motion.xrel * kTurn;
@@ -193,6 +266,7 @@ void Viewer::handleEvent(const SDL_Event& event, SDL_Window* window) {
 void Viewer::update(double seconds) {
     if (ImGui::GetIO().WantCaptureKeyboard) return;
     const bool* keys = SDL_GetKeyboardState(nullptr);
+    if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return;   // Ctrl+letter is a shortcut, not a move
     const auto f = camera_.forward(), r = camera_.right();
     double dx = 0, dy = 0, dz = 0;
     auto add = [&](catalog::Vec3 v, double s) {
@@ -205,7 +279,7 @@ void Viewer::update(double seconds) {
     if (keys[SDL_SCANCODE_D]) add(r, 1);
     if (keys[SDL_SCANCODE_A]) add(r, -1);
     if (keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_SPACE]) dy += 1;
-    if (keys[SDL_SCANCODE_Q] || keys[SDL_SCANCODE_LCTRL]) dy -= 1;
+    if (keys[SDL_SCANCODE_Q]) dy -= 1;
     const double boost = keys[SDL_SCANCODE_LSHIFT] ? 4 : 1;
     const double step = speed_ * boost * seconds;
     camera_.position = {camera_.position.x + dx * step, camera_.position.y + dy * step,
@@ -219,7 +293,7 @@ std::vector<std::string> Viewer::problems() const {
 }
 
 void Viewer::drawScene(int pixelWidth, int pixelHeight) {
-    renderer_->draw(scene_, camera_, pixelWidth, pixelHeight, drawOptions_, selection_);
+    renderer_->draw(scene_, camera_, pixelWidth, pixelHeight, drawOptions_, selectionHit());
 }
 
 void Viewer::drawUi() {
@@ -227,6 +301,7 @@ void Viewer::drawUi() {
     drawBrowser();
     drawInspector();
     drawViewPanel();
+    drawEditPanel();
 }
 
 void Viewer::drawBrowser() {
@@ -292,19 +367,23 @@ void Viewer::drawInspector() {
         ImGui::End();
         return;
     }
-    if (!selection_) {
+    if (!selected_) {
         ImGui::TextDisabled("Left-click something in the view.");
         ImGui::End();
         return;
     }
-    const auto& ref = selection_->kind == scene::Hit::Kind::Model ? scene_.models[selection_->index].ref
-                                                                    : scene_.flats[selection_->index].ref;
+    if (editing(*selected_)) {
+        drawEditInspector(*selectedSlot());
+        ImGui::End();
+        return;
+    }
+    const auto& ref = *selected_;
     const auto& block = scene_.blocks[ref.block];
     const auto& obj = objectOf(scene_, ref);
     ImGui::Text("%s%s", block.name.c_str(), block.isStartingBlock ? "  (starting block)" : "");
     ImGui::Text("object %zu.%zu at offset %d", ref.root, ref.object, obj.position);
     ImGui::Text("file position (%d, %d, %d)", obj.x, obj.y, obj.z);
-    ImGui::Text("distance %.0f units (%.1f m)", selection_->distance, selection_->distance / catalog::kBlockUnitsPerMetre);
+    ImGui::Text("distance %.0f units (%.1f m)", selectedDistance_, selectedDistance_ / catalog::kBlockUnitsPerMetre);
     ImGui::Separator();
 
     if (const auto* m = obj.model()) {
@@ -339,6 +418,13 @@ void Viewer::drawInspector() {
         ImGui::Text("flags %u  magnitude %u  sound %u", f->flags, f->magnitude, f->soundIndex);
         ImGui::Text("faction/mobile id %u", f->factionOrMobileId());
         if (f->action) ImGui::Text("action byte %u, next object at offset %d", f->action, f->nextObjectOffset);
+    } else if (const auto* l = obj.light()) {
+        ImGui::Text("light, radius %u", l->radius);
+    }
+    if (block.bsaIndex != scene::kNoBsaIndex) {
+        ImGui::Separator();
+        if (ImGui::Button("Edit this block")) beginEdit(ref.block);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add, move and change things in %s", block.name.c_str());
     }
     ImGui::End();
 }
@@ -354,10 +440,16 @@ void Viewer::drawViewPanel() {
     ImGui::Checkbox("Flats", &drawOptions_.flats);
     ImGui::SameLine();
     ImGui::Checkbox("Markers", &drawOptions_.markers);
+    ImGui::SameLine();
+    ImGui::Checkbox("Lights", &drawOptions_.lights);
     ImGui::Checkbox("Cull back faces", &drawOptions_.cullBackFaces);
     ImGui::SameLine();
     ImGui::Checkbox("Wireframe", &drawOptions_.wireframe);
     if (ImGui::Button("Start")) cameraToStart();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where a new game puts the player (the enter marker, else the start marker)");
+    ImGui::SameLine();
+    if (ImGui::Button("Entrance")) cameraToEntrance();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where a player walking in through the door arrives (the start marker)");
     ImGui::SameLine();
     if (ImGui::Button("Top")) cameraToTop();
     ImGui::Separator();
@@ -365,7 +457,7 @@ void Viewer::drawViewPanel() {
     const auto& p = camera_.position;
     ImGui::Text("camera (%.0f, %.0f, %.0f)  yaw %.0f", p.x, p.y, p.z, camera_.yaw * 180 / std::numbers::pi);
     ImGui::Text("speed %.0f units/s (wheel)", speed_);
-    ImGui::TextDisabled("Right-drag: look  WASD: move  Q/E: down/up  Shift: fast");
+    ImGui::TextDisabled("Right-drag: look  WASD: move  Q/E: down/up  Shift: fast  Left-click: select");
     const auto problems = textures_.problems().size() + models_.problems().size();
     if (problems > 0 && ImGui::CollapsingHeader(std::format("{} problems", problems).c_str())) {
         for (const auto& p2 : textures_.problems()) ImGui::TextWrapped("%s", p2.c_str());
