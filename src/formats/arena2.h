@@ -2,17 +2,19 @@
 
 #include "core/file.h"
 #include "formats/bsa.h"
+#include "formats/climate.h"
 
 #include <filesystem>
 
 namespace de::formats {
 
-/// The ARENA2 archives the dungeon editor reads. Opening loads them whole (about 80 MB).
+/// The ARENA2 files the dungeon editor reads. Opening loads them whole (about 80 MB).
 struct Arena2 {
     std::filesystem::path dir;
     BsaArchive blocks;   ///< BLOCKS.BSA
     BsaArchive arch3d;   ///< ARCH3D.BSA
     BsaArchive maps;     ///< MAPS.BSA
+    PakMap climate;      ///< CLIMATE.PAK: each map pixel's world climate
 
     static Result<Arena2> open(const std::filesystem::path& dir) {
         Arena2 a;
@@ -25,6 +27,13 @@ struct Arena2 {
             if (!archive) return std::unexpected(archive.error());
             *target = std::move(*archive);
         }
+        auto climatePath = findArena2File(dir, "CLIMATE.PAK");
+        if (!climatePath) return std::unexpected(climatePath.error());
+        auto climateBytes = readFile(*climatePath);
+        if (!climateBytes) return std::unexpected(climateBytes.error());
+        auto climate = PakMap::fromBytes(ByteView(*climateBytes));
+        if (!climate) return fail("CLIMATE.PAK: " + climate.error().message);
+        a.climate = std::move(*climate);
         return a;
     }
 };

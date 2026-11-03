@@ -17,16 +17,27 @@ struct DungeonBlockRef {
     bool isStartingBlock = false;
 };
 
+/// A location's row in its region's map table (MAPTABLE).
+struct MapTableEntry {
+    std::int32_t mapId = 0;
+    std::int32_t longitude = 0, latitude = 0;
+    int locationType = 0;
+    int dungeonType = 255;   ///< 0..18 (Crypt .. Cemetery), 255 none. Picks the enemy and loot tables.
+    bool discovered = false;
+};
+
 struct DungeonRecord {
     int regionIndex = 0;
+    int locationIndex = -1;                 ///< The location this dungeon is under, within its region.
     std::string name;                       ///< The dungeon record's own location name.
-    std::uint16_t locationId = 0;
+    std::uint16_t locationId = 0;           ///< Seeds the dungeon's texture table and random enemies.
     std::uint32_t exteriorLocationId = 0;   ///< The exterior location this dungeon belongs to.
+    MapTableEntry map;                      ///< The location's map table row.
     std::vector<DungeonBlockRef> blocks;
 };
 
-/// Every dungeon in MAPS.BSA, region by region, in file order. Applies the one layout fix-up classic Daggerfall
-/// makes (Orsinium's overlapping border block).
+/// Every dungeon in MAPS.BSA, region by region, in file order, linked to its location's map table row. Applies the
+/// one layout fix-up classic Daggerfall makes (Orsinium's overlapping border block).
 Result<std::vector<DungeonRecord>> readDungeons(const BsaArchive& maps);
 
 /// The name a dungeon block bitfield encodes, or an error for a letter index outside N W L S B M.

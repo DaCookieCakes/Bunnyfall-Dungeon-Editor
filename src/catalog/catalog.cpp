@@ -53,6 +53,19 @@ std::string_view edgeName(Edge edge) {
     return "N";
 }
 
+std::string_view markerName(int record) {
+    switch (record) {
+        case 8: return "enter marker";
+        case 10: return "start marker";
+        case 11: return "quest spawn marker";
+        case 15: return "random enemy";
+        case 16: return "fixed enemy";
+        case 18: return "quest item marker";
+        case 19: return "random treasure";
+        default: return "unknown marker";
+    }
+}
+
 ModelKind classifyModel(std::uint32_t id, std::string_view description, const Box& bounds) {
     if (id == kExitDoorModel) return ModelKind::ExitDoor;
     if (id != kRedBrickDoorModel &&
@@ -177,7 +190,7 @@ Result<Catalog> Catalog::build(const formats::Arena2& arena2) {
     for (std::size_t i = 0; i < arena2.blocks.count(); ++i) {
         const auto& name = arena2.blocks.entry(i).name;
         if (!name.ends_with(".RDB")) continue;
-        auto block = formats::parseRdbBlock(arena2.blocks.record(i));
+        auto block = formats::readClassicRdbBlock(arena2.blocks, i);
         if (!block) return fail(name + ": " + block.error().message);
         for (const auto& root : block->roots)
             for (const auto& obj : root.objects)

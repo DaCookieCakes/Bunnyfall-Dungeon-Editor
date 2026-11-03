@@ -18,11 +18,16 @@ RdbRole rdbRoleFromName(std::string_view blockName);
 std::string_view roleName(RdbRole role);
 
 /// One slot of the block's model reference table (750 slots, most unused).
+/// Text is decoded as Bunnyfall decodes it (ByteView::textField): unused slots are 0xFF bytes and read as U+FFFD
+/// replacement characters, which is how the World Data JSON knows where the used slots end.
 struct RdbModelRef {
-    std::string modelId;       ///< As stored: up to 5 characters, usually digits.
+    std::string modelId;       ///< Up to 5 characters, usually digits.
     std::uint32_t modelIdNum = 0;  ///< modelId parsed as a number; 0 when it is not all digits.
     std::string description;   ///< 3 characters: "DOR", "C00", "EXT", ...
 };
+
+/// The description of an unused model slot ("\uFFFD\uFFFD\uFFFD" in UTF-8).
+inline constexpr std::string_view kUnusedModelDescription = "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD";
 
 /// A model's action record. Present only when the model's action offset is positive; the two link fields are filled
 /// in when another model's action names this object.
@@ -98,8 +103,16 @@ struct RdbBlock {
 
 constexpr std::size_t kRdbModelRefSlots = 750;
 
-/// Parses one RDB record (a BLOCKS.BSA entry whose name ends in .RDB). Classic data only; DFU's per-block repairs
-/// (FixRdbData) are not applied here.
+/// Parses one RDB record (a BLOCKS.BSA entry whose name ends in .RDB), exactly as stored.
 Result<RdbBlock> parseRdbBlock(ByteView record);
+
+/// Daggerfall Unity's FixRdbData: hand repairs to seven classic blocks (dead ends that should connect, a misplaced
+/// door and lever, a moved exit), keyed by the block's BLOCKS.BSA record number. Bunnyfall applies them to every
+/// block it reads, including the base a world-data patch is built on.
+Result<void> applyClassicRepairs(RdbBlock& block, std::size_t bsaIndex);
+
+class BsaArchive;
+/// A BLOCKS.BSA dungeon block as the game sees it: parsed, then repaired. What everything in the editor reads.
+Result<RdbBlock> readClassicRdbBlock(const BsaArchive& blocks, std::size_t bsaIndex);
 
 } // namespace de::formats

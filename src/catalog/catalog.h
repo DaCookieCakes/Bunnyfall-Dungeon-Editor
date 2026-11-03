@@ -95,6 +95,10 @@ private:
 /// edge, floor, then position.
 std::vector<Port> detectPorts(const formats::RdbBlock& block, const std::map<std::uint32_t, ModelInfo>& models);
 
+/// What an editor marker (a flat in archive 199) means, by its record. Records 17 and 20 are in classic data but
+/// nothing reads them; they are named as unknown.
+std::string_view markerName(int record);
+
 /// A model's kind from its id, its most used description and its unrotated bounds.
 ModelKind classifyModel(std::uint32_t id, std::string_view description, const Box& bounds);
 

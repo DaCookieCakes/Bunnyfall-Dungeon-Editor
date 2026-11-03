@@ -56,6 +56,10 @@ data contains 187 RDB blocks, 10,237 ARCH3D models and 4,232 dungeons.
 - **Interior blocks are closed on all four sides**: in 45,891 of 45,920 cases, each side of a non-border block touches
   another block. Border blocks (prefix B) cap the open sides. There are 15 border blocks, about 6.8 per dungeon, and
   each is used on all four sides about equally, so caps are direction-agnostic.
+- **Border caps carry a dead-end stub on every side**, and a dungeon uses only the side facing it. The other stubs
+  are sealed and unreachable; the game never shows them, but a free camera does (Privateer's Hold: 134 central
+  pieces and 37 facing-side cap pieces reachable from the start, 115 cap pieces sealed off). The editor should
+  dim or hide geometry not connected to the start, and its own caps should only build the side they need.
 - The first letter of a block's name gives its role, and the game reads it: `N` normal, `W` wet, `S` quest,
   `M` mausoleum, `B` border. Bunnyfall's "smaller dungeons" mode treats every `B` block as a cap and ignores the
   quest markers in it.
@@ -225,8 +229,10 @@ tests/       unit tests per library; golden-file tests for export.
 Dependencies only go downward (`app → render/model/... → formats → core`). `formats/`, `model/`, `export/` and
 `validate/` build and test without a window, so a command-line exporter and validator come for free.
 
-Proposed libraries, to be confirmed (§10): SDL3 (window and input), Dear ImGui with docking (UI), OpenGL 3.3 core via
-glad, glm, nlohmann/json, doctest.
+Libraries: SDL3 (window and input), Dear ImGui with docking (UI, fetched and pinned), OpenGL 3.3 core loaded through
+libepoxy, doctest (fetched and pinned), nlohmann/json (fetched and pinned; its default sorted objects make a compact
+dump the canonical form patches are hashed over). glm turned out to be unnecessary; the
+little matrix maths there is lives in `render/camera.h` and `catalog/space.h`.
 
 ---
 
@@ -360,8 +366,20 @@ Run before every export. Errors block export; warnings don't.
    Bunnyfall's ARCH3D byte patches are not applied yet. A patch's base block must match what Bunnyfall reads, so both
    must be ported before patches are written.
 2. **Viewer.** Render any classic dungeon with its texture table; fly camera; pick objects and inspect them.
+   *Status (2026-11-02): done.* Texture, palette and CLIMATE.PAK readers; ARCH3D decomposition ported from Daggerfall
+   Unity (corners, fitted UVs, packed UVs; all 1,043 dungeon models build); dungeons linked to their map table row
+   (dungeon type, map id, climate); the classic texture table; flats and editor markers as billboards; picking and the
+   inspector; screenshot and hidden smoke-test modes. Lighting is the editor's own (a soft camera light), not the
+   game's, and the "randomised" texture-table settings (modes 1-4) are not offered yet.
 3. **Round trip.** Import a classic block, export it as JSON, load it in Bunnyfall, and confirm it plays the same.
    This proves the export contract before any authoring UI exists.
+   *Status (2026-11-02): export side done, in-game check pending.* Daggerfall Unity's seven classic block repairs
+   (FixRdbData) are applied wherever blocks are read; text fields decode as Bunnyfall decodes them (lossy UTF-8,
+   trailing NULs only); RDB blocks serialise to World Data JSON; canonical form, sha256, patch ops and the diff are
+   ported. Proof against shipped data: Aquatic Sprites' three RDB patches rebuild to the author's sha256, and the
+   editor's own patches of the same blocks come out with identical ops. `dftool export-block / make-patch /
+   rebuild-patch` drive it by hand. Left: the Bunnyfall-side mod declaration (§6.4) and loading a patch in the game.
+   Bunnyfall's ARCH3D byte patches are still unported (they change how a few models draw, not what is exported).
 4. **Block-level authoring.** Dungeon grid, place blocks, port checks, border auto-cap, new-location export.
 5. **Piece-level authoring.** Snap grid, gizmos, undo/redo, prefabs, entity placement, validation panel.
 6. **Logic graph.** Graph editor and compiler to action chains; door and lock settings.

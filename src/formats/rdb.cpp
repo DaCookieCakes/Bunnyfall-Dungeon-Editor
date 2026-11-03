@@ -1,5 +1,7 @@
 #include "formats/rdb.h"
 
+#include "formats/bsa.h"
+
 #include <algorithm>
 #include <unordered_set>
 
@@ -155,8 +157,8 @@ Result<RdbBlock> parseRdbBlock(ByteView v) {
         for (std::size_t i = 0; i < kRdbModelRefSlots; ++i) {
             const auto at = kHeaderSize + i * kModelRefSize;
             RdbModelRef ref;
-            ref.modelId = v.fixedString(at, 5);
-            ref.description = v.fixedString(at + 5, 3);
+            ref.modelId = v.textField(at, 5);
+            ref.description = v.textField(at + 5, 3);
             if (allDigits(ref.modelId)) ref.modelIdNum = static_cast<std::uint32_t>(std::stoul(ref.modelId));
             block.modelRefs.push_back(std::move(ref));
         }
@@ -183,6 +185,131 @@ Result<RdbBlock> parseRdbBlock(ByteView v) {
     } catch (const OutOfBounds& e) {
         return fail(std::string("truncated block: ") + e.what());
     }
+}
+
+namespace {
+
+/// The object a repair names, or null if the block is not laid out as the repair expects.
+RdbObject* objectAt(RdbBlock& block, std::size_t root, std::size_t index) {
+    if (root >= block.roots.size() || index >= block.roots[root].objects.size()) return nullptr;
+    return &block.roots[root].objects[index];
+}
+
+RdbModel* modelAt(RdbBlock& block, std::size_t root, std::size_t index) {
+    auto* obj = objectAt(block, root, index);
+    return obj ? std::get_if<RdbModel>(&obj->resource) : nullptr;
+}
+
+/// A model object the repairs add: offset 0 (as Daggerfall Unity leaves it), default resources.
+void addModel(RdbRoot& root, std::int32_t x, std::int32_t y, std::int32_t z, std::uint16_t modelIndex,
+              std::int32_t yRotation) {
+    RdbObject obj;
+    obj.position = 0;
+    obj.index = static_cast<std::int32_t>(root.objects.size());
+    obj.x = x;
+    obj.y = y;
+    obj.z = z;
+    obj.type = RdbObjectType::Model;
+    RdbModel m;
+    m.modelIndex = modelIndex;
+    m.yRotation = yRotation;
+    obj.resource = m;
+    root.objects.push_back(std::move(obj));
+}
+
+} // namespace
+
+Result<void> applyClassicRepairs(RdbBlock& b, std::size_t bsaIndex) {
+    const auto broken = [&] { return fail("block " + std::to_string(bsaIndex) + " is not laid out as its repair expects"); };
+    switch (bsaIndex) {
+        case 994: {   // N0000071: connect the western dead end with a long corridor
+            auto* a = modelAt(b, 4, 18);
+            auto* c = modelAt(b, 5, 8);
+            if (!a || !c) return broken();
+            a->modelIndex = 10;
+            objectAt(b, 4, 18)->x = 640;
+            c->modelIndex = 11;
+            return {};
+        }
+        case 945:
+        case 946:   // N0000022, N0000023: remove a bad door
+            if (b.roots.size() <= 2) return broken();
+            b.roots[2].objects.clear();
+            return {};
+        case 958: {   // N0000035: door height
+            auto* o = objectAt(b, 0, 36);
+            if (!o) return broken();
+            o->y = -300;
+            return {};
+        }
+        case 975: {   // N0000052: lever placement
+            auto* o = objectAt(b, 0, 24);
+            if (!o) return broken();
+            o->x = 543;
+            return {};
+        }
+        case 1025: {   // W0000009: move the exit to a corner with a door, and wall the door off elsewhere
+            std::uint16_t wall = 0;
+            for (std::size_t i = 0; i < b.modelRefs.size(); ++i) {
+                if (b.modelRefs[i].modelIdNum == 0) {
+                    b.modelRefs[i] = {"72100", 72100, "DOR"};
+                    wall = static_cast<std::uint16_t>(i);
+                    break;
+                }
+            }
+            auto* cornerObj = objectAt(b, 5, 39);
+            auto* exit = objectAt(b, 8, 0);
+            auto* start = objectAt(b, 4, 5);
+            if (!cornerObj || !exit || !start || !cornerObj->model()) return broken();
+            cornerObj->x += 64;
+            cornerObj->z -= 64;
+            const auto x = cornerObj->x, y = cornerObj->y, z = cornerObj->z;
+            auto& corner = std::get<RdbModel>(cornerObj->resource);
+            corner.modelIndex = 35;
+            corner.yRotation = -512;
+            exit->x = x;
+            exit->z = z + 126;
+            start->x = x;
+            start->z = z;
+            addModel(b.roots[8], x, y, z + 128, wall, -512);
+            return {};
+        }
+        case 1034: {   // W0000018: two corners become T junctions, joined by a corridor; fix a door
+            auto* a = modelAt(b, 4, 38);
+            auto* c = modelAt(b, 5, 40);
+            auto* door = modelAt(b, 2, 0);
+            if (!a || !c || !door || b.roots.size() <= 6) return broken();
+            a->modelIndex = 10;
+            a->yRotation = -512;
+            c->modelIndex = 10;
+            c->yRotation = -2560;
+            addModel(b.roots[6], 1152, -1792, 1920, 11, -512);
+            door->modelIndex = 23;
+            return {};
+        }
+        case 1036: {   // W0000020: open the lower western dead end, a T junction and a stair to join them
+            auto* a = modelAt(b, 4, 15);
+            auto* c = modelAt(b, 5, 34);
+            if (!a || !c) return broken();
+            a->modelIndex = 5;
+            c->modelIndex = 7;
+            c->yRotation = -512;
+            addModel(b.roots[5], 1152, -384, 1408, 4, 512);
+            return {};
+        }
+        default:
+            return {};
+    }
+}
+
+Result<RdbBlock> readClassicRdbBlock(const BsaArchive& blocks, std::size_t bsaIndex) {
+    if (bsaIndex >= blocks.count()) return fail("no block record " + std::to_string(bsaIndex));
+    auto block = parseRdbBlock(blocks.record(bsaIndex));
+    if (!block) return fail(blocks.entry(bsaIndex).name + ": " + block.error().message);
+    if (auto repaired = applyClassicRepairs(*block, bsaIndex); !repaired) {
+        return fail(blocks.entry(bsaIndex).name + ": " + repaired.error().message);
+    }
+    return block;
 }
 
 } // namespace de::formats

@@ -1,6 +1,7 @@
 #include "formats/maps.h"
 
 #include <array>
+#include <map>
 #include <cstdio>
 
 namespace de::formats {
@@ -8,13 +9,51 @@ namespace de::formats {
 namespace {
 constexpr std::array<char, 6> kBlockLetters = {'N', 'W', 'L', 'S', 'B', 'M'};
 constexpr std::size_t kRecordsPerRegion = 4;   // MAPPITEM, MAPDITEM, MAPTABLE, MAPNAMES
+constexpr std::size_t kLocationRecordInRegion = 0;
 constexpr std::size_t kDungeonRecordInRegion = 1;
+constexpr std::size_t kMapTableRecordInRegion = 2;
+constexpr std::size_t kNamesRecordInRegion = 3;
+constexpr std::size_t kMapTableEntrySize = 17;
 constexpr std::size_t kDoorSize = 6;
 constexpr std::size_t kLocationHeaderSize = 45 + 26 + 32 + 9;
 constexpr std::size_t kLocationNameAt = 71;
 constexpr std::size_t kDungeonHeaderSize = 17;
 constexpr std::size_t kBlockEntrySize = 4;
 constexpr std::uint16_t kOrsiniumLocationId = 50015;
+/// Each location's map table row, and which location each exterior location id belongs to.
+struct RegionLocations {
+    std::vector<MapTableEntry> table;
+    std::map<std::uint32_t, int> byExteriorId;
+};
+
+RegionLocations readRegionLocations(const BsaArchive& maps, std::size_t region) {
+    RegionLocations out;
+    const auto names = maps.record(region * kRecordsPerRegion + kNamesRecordInRegion);
+    if (names.size() < 4) return out;
+    const auto count = names.u32(0);
+    const auto table = maps.record(region * kRecordsPerRegion + kMapTableRecordInRegion);
+    const auto locations = maps.record(region * kRecordsPerRegion + kLocationRecordInRegion);
+    out.table.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const std::size_t at = std::size_t{i} * kMapTableEntrySize;
+        MapTableEntry e;
+        e.mapId = table.i32(at);
+        const auto bits = table.u32(at + 4);
+        e.longitude = static_cast<std::int32_t>((bits & 0x1ffffff) >> 8);
+        e.locationType = static_cast<int>((bits << 2) >> 27);
+        e.discovered = ((bits >> 24) & 0x40) != 0;
+        e.latitude = static_cast<std::int32_t>((static_cast<std::uint32_t>(table.i32(at + 8)) & 0xffffff) >> 8);
+        e.dungeonType = table.u8(at + 12);
+        out.table.push_back(e);
+
+        // The location's exterior record: past the offset table, its doors, then the header with its id.
+        std::size_t r = locations.u32(std::size_t{i} * 4) + std::size_t{count} * 4;
+        r += 4 + std::size_t{locations.u32(r)} * kDoorSize;
+        out.byExteriorId.emplace(locations.u16(r + 33), static_cast<int>(i));
+    }
+    return out;
+}
+
 } // namespace
 
 Result<std::string> dungeonBlockName(std::uint16_t bitfield) {
@@ -37,11 +76,17 @@ Result<std::vector<DungeonRecord>> readDungeons(const BsaArchive& maps) {
         if (entry.size == 0) continue;
         const auto v = maps.record(recordIndex);
         try {
+            const auto locations = readRegionLocations(maps, region);
             const auto dungeonCount = v.u32(0);
             const std::size_t tableEnd = 4 + std::size_t{dungeonCount} * 8;
             for (std::uint32_t i = 0; i < dungeonCount; ++i) {
                 DungeonRecord d;
                 d.regionIndex = static_cast<int>(region);
+                const auto owner = locations.byExteriorId.find(v.u16(4 + std::size_t{i} * 8 + 6));
+                if (owner != locations.byExteriorId.end()) {
+                    d.locationIndex = owner->second;
+                    d.map = locations.table[static_cast<std::size_t>(owner->second)];
+                }
                 std::size_t r = tableEnd + v.u32(4 + std::size_t{i} * 8);
 
                 const auto doorCount = v.u32(r);

@@ -6,8 +6,17 @@
 //   dftool <arena2-dir> model <id>         one ARCH3D model's size, planes and textures
 //   dftool <arena2-dir> models [N]         the N most used models (default 30), with kind and size
 //   dftool <arena2-dir> ports [NAME]       one block's edge openings, or how openings fall across all N/W blocks
+//   dftool <arena2-dir> boxes <NAME>       every placed model's box in editor space (for plotting)
+//   dftool <arena2-dir> export-block <NAME> <out.json>
+//                                          a classic block as World Data JSON, to edit by hand. It holds Daggerfall's
+//                                          own data: never ship it; turn the edit into a patch (make-patch)
+//   dftool <arena2-dir> make-patch <BASE> <edited.json> <out-patch.json>
+//                                          the edit as a Bunnyfall world-data patch, checked by rebuilding it
+//   dftool <arena2-dir> rebuild-patch <patch.json> [out.json]
+//                                          rebuild a patch from this ARENA2 and check its sha256
 
 #include "catalog/catalog.h"
+#include "export/world_data_patch.h"
 #include "formats/arch3d.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
@@ -16,6 +25,8 @@
 #include <algorithm>
 #include <charconv>
 #include <format>
+#include <fstream>
+#include <optional>
 #include <cstdio>
 #include <map>
 #include <print>
@@ -31,7 +42,8 @@ namespace {
 
 int usage() {
     std::println(stderr, "usage: dftool <arena2-dir> stats | block <NAME> | dungeon <name|locationId> | model <id> |"
-                         " models [N] | ports [NAME]");
+                         " models [N] | ports [NAME] | boxes NAME |"
+                         " export-block NAME OUT | make-patch BASE EDITED OUT | rebuild-patch PATCH [OUT]");
     return 2;
 }
 
@@ -46,7 +58,7 @@ std::vector<std::pair<std::string, RdbBlock>> loadAllRdb(const Arena2& a, int& f
     for (std::size_t i = 0; i < a.blocks.count(); ++i) {
         const auto& name = a.blocks.entry(i).name;
         if (!name.ends_with(".RDB")) continue;
-        auto block = parseRdbBlock(a.blocks.record(i));
+        auto block = readClassicRdbBlock(a.blocks, i);
         if (!block) {
             std::println(stderr, "{}: {}", name, block.error().message);
             ++failures;
@@ -150,7 +162,7 @@ int cmdBlock(const Arena2& a, std::string name) {
         std::println(stderr, "error: no block {}", name);
         return 1;
     }
-    auto block = parseRdbBlock(a.blocks.record(*index));
+    auto block = readClassicRdbBlock(a.blocks, *index);
     if (!block) return report(block);
     std::println("{}  role {}  record {}  offset {}  roots {}x{}  objects {}", name,
                  roleName(rdbRoleFromName(name)), *index, a.blocks.entry(*index).offset, block->width, block->height,
@@ -331,6 +343,94 @@ int cmdPorts(const Arena2& a, std::string name) {
     return 0;
 }
 
+int cmdBoxes(const Arena2& a, std::string name) {
+    if (!name.ends_with(".RDB")) name += ".RDB";
+    auto catalog = de::catalog::Catalog::build(a);
+    if (!catalog) return report(catalog);
+    const auto index = a.blocks.findByName(name);
+    if (!index) return report(Result<int>(de::fail("no block " + name)));
+    auto block = readClassicRdbBlock(a.blocks, *index);
+    if (!block) return report(block);
+    for (const auto& root : block->roots) {
+        for (const auto& obj : root.objects) {
+            const auto* m = obj.model();
+            if (!m) continue;
+            const auto id = block->modelRefs[m->modelIndex].modelIdNum;
+            const auto* info = catalog->model(id);
+            if (!info) continue;
+            const auto box = de::catalog::transformBox(
+                info->bounds, de::catalog::rdbModelRotation(m->xRotation, m->yRotation, m->zRotation),
+                de::catalog::fromFilePosition(obj.x, obj.y, obj.z));
+            std::println("{} {} {} {} {} {} {} {}", id, de::catalog::kindName(info->kind)[0], box.min.x, box.min.y,
+                         box.min.z, box.max.x, box.max.y, box.max.z);
+        }
+    }
+    return 0;
+}
+
+std::optional<std::size_t> blockIndex(const Arena2& a, std::string name) {
+    if (!name.ends_with(".RDB")) name += ".RDB";
+    return a.blocks.findByName(name);
+}
+
+int writeJson(const std::string& path, const de::exporter::Json& json) {
+    std::ofstream out(path);
+    out << json.dump(1) << "\n";
+    if (!out) {
+        std::println(stderr, "error: cannot write {}", path);
+        return 1;
+    }
+    return 0;
+}
+
+std::optional<de::exporter::Json> readJson(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) return std::nullopt;
+    auto json = de::exporter::Json::parse(in, nullptr, false);
+    if (json.is_discarded()) return std::nullopt;
+    return json;
+}
+
+int cmdExportBlock(const Arena2& a, const std::string& name, const std::string& out) {
+    const auto index = blockIndex(a, name);
+    if (!index) return report(Result<int>(de::fail("no block " + name)));
+    auto json = de::exporter::classicBlockJson(a.blocks, *index);
+    if (!json) return report(json);
+    if (int r = writeJson(out, *json)) return r;
+    std::println("wrote {} ({} sha256 {})", out, a.blocks.entry(*index).name, de::exporter::canonicalSha256(*json));
+    std::println("this file holds Daggerfall's own data: edit it, then make a patch to ship");
+    return 0;
+}
+
+int cmdMakePatch(const Arena2& a, const std::string& base, const std::string& editedPath, const std::string& out) {
+    const auto index = blockIndex(a, base);
+    if (!index) return report(Result<int>(de::fail("no block " + base)));
+    const auto edited = readJson(editedPath);
+    if (!edited) return report(Result<int>(de::fail("cannot read JSON from " + editedPath)));
+    const std::string name = edited->value("Name", a.blocks.entry(*index).name);
+    auto patch = de::exporter::makeBlockPatch(a.blocks, *index, *edited, name + ".json");
+    if (!patch) return report(patch);
+    if (int r = writeJson(out, *patch)) return r;
+    std::println("wrote {}: {} ops over {}, rebuilds {} (sha256 {})", out, (*patch)["ops"].size(),
+                 a.blocks.entry(*index).name, (*patch)["rebuilds"].get<std::string>(),
+                 (*patch)["sha256"].get<std::string>());
+    return 0;
+}
+
+int cmdRebuildPatch(const Arena2& a, const std::string& patchPath, const std::string& out) {
+    const auto patch = readJson(patchPath);
+    if (!patch) return report(Result<int>(de::fail("cannot read JSON from " + patchPath)));
+    auto json = de::exporter::rebuildBlockPatch(*patch, a.blocks);
+    if (!json) return report(json);
+    const auto sha = de::exporter::canonicalSha256(*json);
+    const bool same = sha == patch->value("sha256", "");
+    std::println("{}: {} (sha256 {})", patch->value("rebuilds", "?"), same ? "rebuilds exactly" : "DIFFERS from the author's", sha);
+    if (!out.empty()) {
+        if (int r = writeJson(out, *json)) return r;
+    }
+    return same ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -345,5 +445,9 @@ int main(int argc, char** argv) {
     if (cmd == "block") return cmdBlock(*arena2, argv[3]);
     if (cmd == "dungeon") return cmdDungeon(*arena2, argv[3]);
     if (cmd == "model") return cmdModel(*arena2, argv[3]);
+    if (cmd == "boxes") return cmdBoxes(*arena2, argv[3]);
+    if (cmd == "export-block" && argc > 4) return cmdExportBlock(*arena2, argv[3], argv[4]);
+    if (cmd == "make-patch" && argc > 5) return cmdMakePatch(*arena2, argv[3], argv[4], argv[5]);
+    if (cmd == "rebuild-patch") return cmdRebuildPatch(*arena2, argv[3], argc > 4 ? argv[4] : "");
     return usage();
 }

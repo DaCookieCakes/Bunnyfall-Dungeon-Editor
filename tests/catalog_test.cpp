@@ -1,3 +1,4 @@
+#include "arena2_fixture.h"
 #include "catalog/catalog.h"
 
 #include <doctest/doctest.h>
@@ -111,10 +112,8 @@ TEST_CASE("model kinds") {
 namespace {
 const Catalog* catalog() {
     static const std::optional<Catalog> data = []() -> std::optional<Catalog> {
-        const char* dir = std::getenv("DE_ARENA2");
-        if (!dir || !std::filesystem::exists(dir)) return std::nullopt;
-        auto a = de::formats::Arena2::open(dir);
-        if (!a) FAIL(a.error().message);
+        const auto* a = de::test::arena2();
+        if (!a) return std::nullopt;
         auto c = Catalog::build(*a);
         if (!c) FAIL(c.error().message);
         return std::move(*c);
@@ -149,13 +148,15 @@ TEST_CASE("ARENA2 catalog: models and blocks") {
         MESSAGE("skipped: set DE_ARENA2 to an ARENA2 directory");
         return;
     }
-    CHECK(c->models().size() == 1043);
+    // Repaired blocks (DFU's FixRdbData): N0000022/23 lose their bad door, model 09004, used nowhere else.
+    CHECK(c->models().size() == 1042);
+    CHECK(c->model(9004) == nullptr);
     CHECK(c->blocks().size() == 187);
 
     const auto* corridor = c->model(67000);
     REQUIRE(corridor);
     CHECK(corridor->kind == ModelKind::Architecture);
-    CHECK(corridor->uses == 1302);
+    CHECK(corridor->uses == 1304);   // 1302 stored; W0000018's and W0000020's repairs each add one
     CHECK(corridor->bounds.min == Vec3{-64, 0, -128});
     CHECK(corridor->bounds.max == Vec3{64, 128, 128});
     CHECK(c->model(70300)->kind == ModelKind::ExitDoor);

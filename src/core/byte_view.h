@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/utf8.h"
+
 #include <algorithm>
 #include <bit>
 #include <cstddef>
@@ -48,6 +50,15 @@ public:
         const auto field = bytes_.subspan(offset, width);
         const auto end = std::find(field.begin(), field.end(), std::uint8_t{0});
         return std::string(field.begin(), end);
+    }
+
+    /// A fixed-width text field as Bunnyfall reads it: the whole field decoded as UTF-8 (invalid bytes become U+FFFD)
+    /// with trailing NULs removed. Unlike fixedString, NULs inside the field are kept.
+    [[nodiscard]] std::string textField(std::size_t offset, std::size_t width) const {
+        require(offset, width);
+        auto text = decodeUtf8Lossy(bytes_.subspan(offset, width));
+        while (!text.empty() && text.back() == '\0') text.pop_back();
+        return text;
     }
 
     [[nodiscard]] std::span<const std::uint8_t> bytes() const { return bytes_; }

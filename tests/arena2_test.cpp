@@ -1,6 +1,7 @@
 // Tests against the real ARENA2 data. They read DE_ARENA2 (CTest sets it to ../DFData/ARENA2 by default) and are
 // skipped, with a message, when the data is not there. The expected numbers were measured by tools/dfprobe.py.
 
+#include "arena2_fixture.h"
 #include "formats/arch3d.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
@@ -16,30 +17,9 @@
 
 using namespace de::formats;
 
-namespace {
-
-const Arena2* arena2() {
-    static const std::optional<Arena2> data = []() -> std::optional<Arena2> {
-        const char* dir = std::getenv("DE_ARENA2");
-        if (!dir || !std::filesystem::exists(dir)) return std::nullopt;
-        auto a = Arena2::open(dir);
-        if (!a) FAIL("ARENA2 present but did not open: " << a.error().message);
-        return std::move(*a);
-    }();
-    return data ? &*data : nullptr;
-}
-
-#define REQUIRE_ARENA2()                                                  \
-    const Arena2* a = arena2();                                           \
-    if (!a) {                                                             \
-        MESSAGE("skipped: set DE_ARENA2 to an ARENA2 directory");         \
-        return;                                                           \
-    }
-
-} // namespace
 
 TEST_CASE("ARENA2: every RDB block parses, with the classic role mix") {
-    REQUIRE_ARENA2();
+    DE_REQUIRE_ARENA2(a);
     std::map<RdbRole, int> roles;
     int total = 0;
     std::size_t maxObjects = 0;
@@ -63,7 +43,7 @@ TEST_CASE("ARENA2: every RDB block parses, with the classic role mix") {
 }
 
 TEST_CASE("ARENA2: every dungeon starts at (0,0) and names real blocks") {
-    REQUIRE_ARENA2();
+    DE_REQUIRE_ARENA2(a);
     auto dungeons = readDungeons(a->maps);
     REQUIRE_MESSAGE(dungeons, (dungeons ? "" : dungeons.error().message));
     CHECK(dungeons->size() == 4232);
@@ -86,7 +66,7 @@ TEST_CASE("ARENA2: every dungeon starts at (0,0) and names real blocks") {
 }
 
 TEST_CASE("ARENA2: every model a dungeon block uses parses") {
-    REQUIRE_ARENA2();
+    DE_REQUIRE_ARENA2(a);
     std::set<std::uint32_t> ids;
     for (std::size_t i = 0; i < a->blocks.count(); ++i) {
         if (!a->blocks.entry(i).name.ends_with(".RDB")) continue;
@@ -107,7 +87,7 @@ TEST_CASE("ARENA2: every model a dungeon block uses parses") {
 }
 
 TEST_CASE("ARENA2: the standard corridor piece is 128 x 128 x 256 block units") {
-    REQUIRE_ARENA2();
+    DE_REQUIRE_ARENA2(a);
     const auto index = a->arch3d.findById(67000);
     REQUIRE(index);
     auto mesh = parseArch3dMesh(a->arch3d.record(*index), 67000);

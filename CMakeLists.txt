@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(DE_BUILD_TESTS "Build the test suite" ON)
 option(DE_BUILD_TOOLS "Build command-line tools (dftool)" ON)
+option(DE_BUILD_APP "Build the editor application (needs SDL3 and libepoxy)" ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
@@ -31,6 +32,8 @@ add_library(de_formats STATIC
   src/formats/rdb.cpp
   src/formats/arch3d.cpp
   src/formats/maps.cpp
+  src/formats/texture.cpp
+  src/formats/climate.cpp
 )
 target_link_libraries(de_formats PUBLIC de_core PRIVATE de_warnings)
 
@@ -41,9 +44,70 @@ add_library(de_catalog STATIC
 )
 target_link_libraries(de_catalog PUBLIC de_formats PRIVATE de_warnings)
 
+# ---- geometry: drawable meshes from ARCH3D, no GPU ----
+add_library(de_geometry STATIC src/geometry/model_mesh.cpp)
+target_link_libraries(de_geometry PUBLIC de_catalog PRIVATE de_warnings)
+
+# ---- scene: placed instances of a block or a dungeon, and picking; no GPU ----
+add_library(de_scene STATIC src/scene/dungeon_scene.cpp src/scene/picking.cpp src/scene/texture_table.cpp)
+target_link_libraries(de_scene PUBLIC de_geometry PRIVATE de_warnings)
+
+# ---- export: World Data JSON and patches for Bunnyfall ----
+include(FetchContent)
+# nlohmann/json is a single header; fetched and pinned, its own build not run.
+FetchContent_Declare(nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+  URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+  DOWNLOAD_EXTRACT_TIMESTAMP ON
+  SOURCE_SUBDIR do-not-build)
+FetchContent_MakeAvailable(nlohmann_json)
+add_library(nlohmann_json_header INTERFACE)
+target_include_directories(nlohmann_json_header SYSTEM INTERFACE "${nlohmann_json_SOURCE_DIR}/single_include")
+
+add_library(de_export STATIC src/export/dfu_json.cpp src/export/world_data_patch.cpp)
+target_link_libraries(de_export PUBLIC de_formats nlohmann_json_header PRIVATE de_warnings)
+
+# ---- the application: window, renderer, UI ----
+if(DE_BUILD_APP)
+  find_package(SDL3 REQUIRED CONFIG)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
+  include(FetchContent)
+  FetchContent_Declare(imgui
+    URL https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0-docking.tar.gz
+    URL_HASH SHA256=746c265540bd3aa109570f29492ef4d8f5b421dd9fd0049c35ca35f21496f1a5
+    DOWNLOAD_EXTRACT_TIMESTAMP ON
+    SOURCE_SUBDIR do-not-build)
+  FetchContent_MakeAvailable(imgui)
+  add_library(imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/imgui_demo.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
+  target_include_directories(imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+  target_link_libraries(imgui PUBLIC SDL3::SDL3)
+
+  add_library(de_render STATIC
+    src/render/shader.cpp
+    src/render/texture_cache.cpp
+    src/render/model_cache.cpp
+    src/render/renderer.cpp
+  )
+  target_link_libraries(de_render PUBLIC de_geometry de_scene PkgConfig::EPOXY PRIVATE de_warnings)
+
+  add_executable(dungeon_editor
+    src/app/main.cpp
+    src/app/viewer.cpp
+  )
+  target_link_libraries(dungeon_editor PRIVATE de_render de_catalog imgui SDL3::SDL3 de_warnings)
+endif()
+
 if(DE_BUILD_TOOLS)
   add_executable(dftool tools/dftool/main.cpp)
-  target_link_libraries(dftool PRIVATE de_catalog de_warnings)
+  target_link_libraries(dftool PRIVATE de_catalog de_export de_warnings)
 endif()
 
 if(DE_BUILD_TESTS)
@@ -71,11 +135,20 @@ if(DE_BUILD_TESTS)
     tests/arena2_test.cpp
     tests/space_test.cpp
     tests/catalog_test.cpp
+    tests/texture_test.cpp
+    tests/model_mesh_test.cpp
+    tests/scene_test.cpp
+    tests/picking_test.cpp
+    tests/texture_table_test.cpp
+    tests/camera_test.cpp
+    tests/export_test.cpp
   )
-  target_link_libraries(de_tests PRIVATE de_catalog doctest::doctest de_warnings)
+  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export doctest::doctest de_warnings)
 
   # Data tests read ARENA2 from DE_ARENA2; default to the workspace copy beside this project.
   set(DE_ARENA2 "${CMAKE_SOURCE_DIR}/../DFData/ARENA2" CACHE PATH "ARENA2 directory for data tests")
   add_test(NAME de_tests COMMAND de_tests)
-  set_tests_properties(de_tests PROPERTIES ENVIRONMENT "DE_ARENA2=${DE_ARENA2}")
+  # Patch tests also read Bunnyfall's vendored world-data patches.
+  set(DE_BUNNYFALL "${CMAKE_SOURCE_DIR}/../Bunnyfall" CACHE PATH "Bunnyfall checkout for tests against its vendored data")
+  set_tests_properties(de_tests PROPERTIES ENVIRONMENT "DE_ARENA2=${DE_ARENA2};DE_BUNNYFALL=${DE_BUNNYFALL}")
 endif()
