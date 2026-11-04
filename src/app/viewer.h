@@ -354,6 +354,9 @@ private:
     std::uint64_t linksStamp_ = ~std::uint64_t{0};
     std::vector<SceneLink> links_;
     enum class LinkMode { Off, Selection, All } linkMode_ = LinkMode::All;
+    void cycleLinkMode() {
+        linkMode_ = linkMode_ == LinkMode::All ? LinkMode::Selection : linkMode_ == LinkMode::Selection ? LinkMode::Off : LinkMode::All;
+    }
     std::optional<formats::TextResource> texts_;           // TEXT.RSC, for the text actions
     bool showTriggersTab_ = false;                          // bring the Triggers tab to the front once
     std::optional<ImVec2> propertiesAt_;                    // where a double-click asked Properties to open

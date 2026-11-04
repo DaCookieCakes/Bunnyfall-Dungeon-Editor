@@ -385,6 +385,10 @@ bool Viewer::handleEditKey(const SDL_KeyboardEvent& key) {
         openProperties(ImGui::GetIO().MousePos);
         return true;
     }
+    if (key.key == SDLK_L && !(key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT))) {
+        cycleLinkMode();
+        return true;
+    }
     if (key.key == SDLK_HOME) {
         frameOrthoViews();
         return true;

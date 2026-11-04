@@ -80,8 +80,8 @@ press **Edit** in the Edit panel). Then:
   what it sets off and what sets it off (click either to go there), the whole chain, and warnings for things that
   won't work (a lock action on something that isn't a door, a link to nothing, an object nothing ever sets off).
   The views draw the links as arrows: cyan for a chain, dashed magenta for a teleport, grey where the chain stops,
-  a red cross for a link to nothing. The selection's chains are bright. **Show > Logic links** picks all, the
-  selection's, or none.
+  a red cross for a link to nothing. The selection's chains are bright. The toolbar's **Links** button (or **L**)
+  cycles all, only the chains the selection is part of, or none.
 - **Editing logic** (the Triggers tab, on an object of the edited block): pick an **Action** (move, turn, swing open,
   lock/unlock, teleport, a message or riddle, hurt, drain magicka, cast a spell, set a quest variable, or just pass
   it on), when it is **Set off** (used, stood on, walked into, hit, ...), and its values: direction, distance and

@@ -126,6 +126,7 @@ void Viewer::drawUi() {
                     {"Ctrl+D / Delete", "duplicate / delete"},
                     {"Ctrl+Z, Ctrl+Y", "undo, redo"},
                     {"Ctrl+S", "save the edited block"},
+                    {"L", "trigger arrows: all / the selection's chains / none"},
                     {"Esc", "cancel a move, stop placing, deselect"},
                 };
                 for (const auto& [k, what] : rows) {
@@ -236,6 +237,11 @@ void Viewer::drawToolbar() {
             drawShowMenu();
             ImGui::EndPopup();
         }
+        ImGui::SameLine();
+        static constexpr const char* kLinkLabels[] = {"Links: off", "Links: selection", "Links: all"};
+        if (ImGui::Button(kLinkLabels[int(linkMode_)])) cycleLinkMode();
+        ImGui::SetItemTooltip("Trigger arrows in the views (L): all of them, only the chains the selection is part of,\n"
+                              "or none");
         separator();
         bool four = !maximised_;
         if (toggle("4 views", four, "Four views, or the one under the pointer (Shift+Z)")) {
