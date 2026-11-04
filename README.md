@@ -59,6 +59,19 @@ press **Edit** in the Edit panel). Then:
 - **Hiding:** the toolbar's **Show** menu hides kinds (architecture, doors, props, scenery, enemies, treasure, quest
   markers, start/enter, other markers, lights); **H** hides the selection, **I** shows only the selection's block,
   **U** shows everything again. Hidden things cannot be picked or placed on.
+- **Models** (left, under Browse): every model classic dungeons use, as pictures, most used first, by kind
+  (architecture, doors, props). Click one, then click in a view to place it (a tinted preview follows the pointer;
+  **[** and **]** turn it). Empty space works too: the grid's level in 3D and Top, the view's middle in Front and
+  Side, so a new block can be built from nothing. **Piece snap** (toolbar) keeps architecture and doors on the grid
+  classic dungeons use (64 units across, 128 up, quarter turns). "Unused variants" also lists same-shape pieces in
+  textures no classic block uses.
+- **Texture variants:** a selected model shows the same piece in its other textures in Properties; click one to swap
+  (every selected piece of that shape swaps). With several selected, **Texture set** buttons retexture all of them.
+- **Prefabs** (the Models panel's last tab): name a selection and **Save selection**, from any block, classic or
+  your own. They are files in `prefabs/` beside the project; place them like models. Action links inside a prefab
+  (a lever and its door) follow the copies.
+- **Outliner** (beside Properties): everything in the edited (or selected) block, by kind, with a filter and a
+  show/hide box per object. Click selects, double-click (or **F** in a view) frames it.
 - **G** moves the selection with the mouse (left-click puts it down, right-click or Esc cancels). Arrows nudge it
   (Shift: 64 units), PageUp/PageDown move it up and down. **Del** deletes, **Ctrl+D** duplicates,
   **Ctrl+Z / Ctrl+Y** undo and redo, **Ctrl+S** saves.

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace de::edit {
@@ -42,6 +43,15 @@ public:
 
     /// Adds `obj` with a new save identity. Goes into the first root holding objects (root 0 if none).
     ObjectSlot add(formats::RdbObject obj);
+    /// Adds a model object (`obj` holds an RdbModel) showing model `modelId`: its modelIndex is set to the block's
+    /// slot for that model, a free slot taking it (with `description`) when the block has none; one undo step.
+    /// Nullopt when all 750 slots are used by other models.
+    std::optional<ObjectSlot> addModel(std::uint32_t modelId, std::string_view description, formats::RdbObject obj);
+    /// Shows another model on a model object (keeping its place, turn and actions); takes a model slot as addModel
+    /// does. False when it is not a model or no slot is free.
+    bool setModel(ObjectSlot slot, std::uint32_t modelId, std::string_view description);
+    /// The block's model slot for `modelId`, if it has one.
+    [[nodiscard]] std::optional<std::uint16_t> modelSlot(std::uint32_t modelId) const;
     /// Replaces an object's fields (moving it, changing what it is). Its save identity is kept.
     bool replace(ObjectSlot slot, formats::RdbObject obj);
     bool remove(ObjectSlot slot);
@@ -67,6 +77,10 @@ public:
 
 private:
     void beforeChange();
+    ObjectSlot insert(formats::RdbObject obj);
+    /// A slot to put a new model reference in (an unused one, or one past the end while under 750).
+    [[nodiscard]] std::optional<std::size_t> freeModelSlot() const;
+    std::uint16_t claimModelSlot(std::uint32_t modelId, std::string_view description, std::size_t free);
     void afterChange();
     std::int32_t nextPosition() const;
 

@@ -107,7 +107,7 @@ int screenshot(de::app::Viewer& viewer, const Options& o) {
         // The UI at the screenshot's size. Three frames: the first lays the windows out, the second docks them, the
         // last is the one drawn. Each view is drawn into its picture, then the UI over the screenshot.
         ImGui::GetIO().IniFilename = nullptr;   // the default layout, not the designer's saved one
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 12; ++i) {   // later frames also give the model pictures time to draw
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplSDL3_NewFrame();
             ImGui::GetIO().DisplaySize = {float(o.width), float(o.height)};

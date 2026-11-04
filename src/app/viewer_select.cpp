@@ -337,7 +337,7 @@ std::optional<double> yawOnPlane(const scene::Ray& ray, catalog::Vec3 centre) {
 // ---- the handles ----
 
 bool Viewer::drawGizmo(std::size_t index) {
-    if (!edit_ || placing_ || grabbing_) return false;
+    if (!edit_ || placingAnything() || grabbing_) return false;
     const auto centre = selectionCentre();
     if (!centre) return false;
     const auto c = toScreen(index, *centre);
@@ -484,7 +484,8 @@ void Viewer::continueDrag() {
         }
         case Drag::Kind::Axis: {
             const double t = (moved.x * drag_.screenAxis.x + moved.y * drag_.screenAxis.y) * drag_.unitsPerPoint;
-            const auto s = snapped(t, snap_);
+            const auto steps = moveSteps(selectionHasPieces());
+            const auto s = snapped(t, steps[static_cast<std::size_t>(drag_.axis)]);
             // File Y points down.
             const std::array<std::int32_t, 3> offset{drag_.axis == 0 ? s : 0, drag_.axis == 1 ? -s : 0, drag_.axis == 2 ? s : 0};
             if (offset != drag_.lastOffset) {
@@ -498,8 +499,9 @@ void Viewer::continueDrag() {
             const auto cam = cameraOf(drag_.view);
             const auto r = cam.right(), u = cam.up();
             const double dx = moved.x * drag_.unitsPerPoint, dy = -moved.y * drag_.unitsPerPoint;
-            const std::array<std::int32_t, 3> offset{snapped(r.x * dx + u.x * dy, snap_), -snapped(r.y * dx + u.y * dy, snap_),
-                                                     snapped(r.z * dx + u.z * dy, snap_)};
+            const auto steps = moveSteps(selectionHasPieces());
+            const std::array<std::int32_t, 3> offset{snapped(r.x * dx + u.x * dy, steps[0]), -snapped(r.y * dx + u.y * dy, steps[1]),
+                                                     snapped(r.z * dx + u.z * dy, steps[2])};
             if (offset != drag_.lastOffset) {
                 applyTransform(offset, 0);
                 drag_.lastOffset = offset;
@@ -517,7 +519,8 @@ void Viewer::continueDrag() {
                 drag_.turned += step;
                 drag_.lastYaw = *yaw;
             }
-            const auto units = snapped(drag_.turned * catalog::kRotationUnitsPerTurn / (2 * std::numbers::pi), turnSnap_);
+            const auto units = snapped(drag_.turned * catalog::kRotationUnitsPerTurn / (2 * std::numbers::pi),
+                                       turnStep(selectionHasPieces()));
             if (units != drag_.lastTurn) {
                 applyTransform({0, 0, 0}, units);
                 drag_.lastTurn = units;

@@ -107,6 +107,61 @@ std::int32_t BlockEdit::nextPosition() const {
 
 ObjectSlot BlockEdit::add(formats::RdbObject obj) {
     beforeChange();
+    return insert(std::move(obj));
+}
+
+std::optional<std::uint16_t> BlockEdit::modelSlot(std::uint32_t modelId) const {
+    const auto id = std::to_string(modelId);
+    for (std::size_t i = 0; i < current_.modelRefs.size(); ++i) {
+        const auto& r = current_.modelRefs[i];
+        if (r.modelIdNum == modelId && r.modelId == id) return static_cast<std::uint16_t>(i);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::size_t> BlockEdit::freeModelSlot() const {
+    for (std::size_t i = 0; i < current_.modelRefs.size(); ++i) {
+        const auto& r = current_.modelRefs[i];
+        if (r.description == formats::kUnusedModelDescription || (r.modelId.empty() && r.modelIdNum == 0)) return i;
+    }
+    if (current_.modelRefs.size() < formats::kRdbModelRefSlots) return current_.modelRefs.size();
+    return std::nullopt;
+}
+
+std::uint16_t BlockEdit::claimModelSlot(std::uint32_t modelId, std::string_view description, std::size_t free) {
+    if (free == current_.modelRefs.size()) current_.modelRefs.emplace_back();
+    current_.modelRefs[free] = {std::to_string(modelId), modelId, std::string(description.substr(0, 3))};
+    return static_cast<std::uint16_t>(free);
+}
+
+std::optional<ObjectSlot> BlockEdit::addModel(std::uint32_t modelId, std::string_view description, formats::RdbObject obj) {
+    auto* m = std::get_if<formats::RdbModel>(&obj.resource);
+    if (!m) return std::nullopt;
+    auto slot = modelSlot(modelId);
+    const auto free = slot ? std::nullopt : freeModelSlot();
+    if (!slot && !free) return std::nullopt;
+    beforeChange();
+    if (!slot) slot = claimModelSlot(modelId, description, *free);
+    m->modelIndex = *slot;
+    obj.type = formats::RdbObjectType::Model;
+    return insert(std::move(obj));
+}
+
+bool BlockEdit::setModel(ObjectSlot at, std::uint32_t modelId, std::string_view description) {
+    const auto* obj = object(at);
+    if (!obj || !obj->model()) return false;
+    auto slot = modelSlot(modelId);
+    const auto free = slot ? std::nullopt : freeModelSlot();
+    if (!slot && !free) return false;
+    if (slot && obj->model()->modelIndex == *slot) return true;
+    beforeChange();
+    if (!slot) slot = claimModelSlot(modelId, description, *free);
+    std::get<formats::RdbModel>(current_.roots[at.root].objects[at.object].resource).modelIndex = *slot;
+    afterChange();
+    return true;
+}
+
+ObjectSlot BlockEdit::insert(formats::RdbObject obj) {
     if (current_.roots.empty()) current_.roots.emplace_back();
     std::size_t root = 0;
     for (std::size_t r = 0; r < current_.roots.size(); ++r) {

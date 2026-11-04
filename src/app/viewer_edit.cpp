@@ -72,7 +72,7 @@ void Viewer::beginEdit(std::size_t sceneBlock) {
 
 void Viewer::endEdit() {
     edit_.reset();
-    placing_.reset();
+    stopPlacing();
     grabbing_ = false;
     confirmDiscard_ = false;
 }
@@ -168,21 +168,83 @@ std::pair<double, double> Viewer::entitySize(const formats::RdbObject& obj) {
     return {0, 0};   // a model stands on its own origin
 }
 
-std::array<std::int32_t, 3> Viewer::toFile(catalog::Vec3 world, std::size_t sceneBlock) const {
+std::array<std::int32_t, 3> Viewer::toFile(catalog::Vec3 world, std::size_t sceneBlock,
+                                           std::optional<std::array<int, 3>> steps) const {
     const auto& origin = scene_.blocks[sceneBlock].origin;
-    return {edit::snapTo(world.x - origin.x, snap_), edit::snapTo(-(world.y - origin.y), 1),
-            edit::snapTo(world.z - origin.z, snap_)};
+    const auto s = steps.value_or(std::array<int, 3>{snap_, 1, snap_});
+    return {edit::snapTo(world.x - origin.x, s[0]), edit::snapTo(-(world.y - origin.y), s[1]),
+            edit::snapTo(world.z - origin.z, s[2])};
+}
+
+bool Viewer::isPiece(std::uint32_t modelId) const {
+    const auto* info = catalog_.model(modelId);
+    return info && (info->kind == catalog::ModelKind::Architecture || info->kind == catalog::ModelKind::Door ||
+                    info->kind == catalog::ModelKind::ExitDoor);
+}
+
+bool Viewer::selectionHasPieces() const {
+    if (!edit_) return false;
+    for (const auto& s : selectedSlots()) {
+        const auto* m = edit_->object(s)->model();
+        if (m && isPiece(edit_->block().modelRefs[m->modelIndex].modelIdNum)) return true;
+    }
+    return false;
+}
+
+std::array<int, 3> Viewer::moveSteps(bool pieces) const {
+    if (pieces && pieceSnap_) return {std::max(snap_, 64), 128, std::max(snap_, 64)};
+    return {snap_, snap_, snap_};
 }
 
 void Viewer::placeAt(double x, double y) {
-    if (!edit_ || !placing_) return;
-    const auto s = surfaceAt(x, y);
+    if (!edit_ || !placingAnything()) return;
+    const auto s = placementSurface(x, y);
     if (!s) {
-        status_ = "Nothing there to place on.";
+        status_ = "Nothing there to place on, and outside every block.";
         return;
     }
     if (scene_.blocks[s->sceneBlock].name != edit_->name()) {
         status_ = "That is in " + scene_.blocks[s->sceneBlock].name + "; you are editing " + edit_->name() + ".";
+        return;
+    }
+    if (placingPrefab_) {
+        const auto at = prefabPlacement(x, y);
+        if (!at) return;
+        const auto& prefab = prefabs_[*placingPrefab_];
+        const auto slots = project::placePrefab(*edit_, prefab, at->first, edit::modelYRotationFor(placeTurn_));
+        if (!slots) {
+            status_ = "This block has no model slots left for the prefab's models.";
+            return;
+        }
+        editChanged();
+        std::vector<scene::ObjectRef> refs;
+        for (const auto& placed : *slots) refs.push_back({at->second, placed.root, placed.object});
+        setSelection(std::move(refs));
+        status_ = std::format("Placed \"{}\" ({} objects). Click again for another; [ ] turn, right-click or Esc stops.",
+                              prefab.name, slots->size());
+        return;
+    }
+    if (placingModel_) {
+        const auto at = modelPlacement(x, y);
+        const auto* info = catalog_.model(*placingModel_);
+        if (!at || !info) return;
+        const auto file = toFile(at->first.transform.translation, at->second);
+        formats::RdbObject obj;
+        obj.x = file[0];
+        obj.y = file[1];
+        obj.z = file[2];
+        formats::RdbModel m;
+        m.yRotation = placeTurn_;
+        obj.resource = m;
+        const auto slot = edit_->addModel(*placingModel_, info->description, std::move(obj));
+        if (!slot) {
+            status_ = "This block already uses 750 different models; no slot is free for another.";
+            return;
+        }
+        editChanged();
+        setSelection({scene::ObjectRef{at->second, slot->root, slot->object}});
+        status_ = std::format("Placed model {} in {}. Click again for another; [ ] turn, right-click or Esc stops.",
+                              *placingModel_, edit_->name());
         return;
     }
     auto obj = edit::makeEntity(*placing_, 0, 0, 0, sceneryArchive_, sceneryRecord_);
@@ -205,7 +267,7 @@ void Viewer::placeAt(double x, double y) {
 
 void Viewer::startGrab() {
     if (!edit_ || selectedSlots().empty() || drag_.kind != Drag::Kind::None) return;
-    placing_.reset();
+    stopPlacing();
     beginTransform();
     grabBlock_ = movingBlock_;
     grabbing_ = true;
@@ -235,7 +297,10 @@ void Viewer::grabTo(double x, double y) {
         centre = obj.model() ? s->point : edit::restingCentre(s->point, s->normal, w, h);
     }
     // Measured from the block it was picked up in, wherever the pointer is.
-    const auto file = toFile(centre, grabBlock_);
+    const auto pieces = selectionHasPieces();
+    auto steps = moveSteps(pieces);
+    if (!pieces && views_[pointerView_].kind == ViewKind::Perspective) steps[1] = 1;   // resting on what it is over
+    const auto file = toFile(centre, grabBlock_, steps);
     const std::array<std::int32_t, 3> offset{file[0] - obj.x, file[1] - obj.y, file[2] - obj.z};
     const auto* now = edit_->object(moving_.front().slot);
     if (now && now->x == file[0] && now->y == file[1] && now->z == file[2]) return;
@@ -323,11 +388,19 @@ bool Viewer::handleEditKey(const SDL_KeyboardEvent& key) {
             endTransform(false);
             drag_ = {};
         } else if (grabbing_) endGrab(false);
-        else if (placing_) placing_.reset();
+        else if (placingAnything()) stopPlacing();
         else clearSelection();
         return true;
     }
     if (drag_.kind != Drag::Kind::None) return false;
+    if ((placingModel_ || placingPrefab_) && (key.key == SDLK_LEFTBRACKET || key.key == SDLK_RIGHTBRACKET)) {
+        // Turn the model about to be placed: a quarter turn, or with Shift the turn snap.
+        const std::int32_t step = shift ? std::max(turnSnap_, 1) : kQuarterTurn;
+        const auto turn = edit::modelYRotationFor(key.key == SDLK_RIGHTBRACKET ? step : -step);
+        placeTurn_ = ((placeTurn_ + turn) % catalog::kRotationUnitsPerTurn + catalog::kRotationUnitsPerTurn) %
+                     catalog::kRotationUnitsPerTurn;
+        return true;
+    }
     if (ctrl && key.key == SDLK_A) {
         selectAll();
         return true;
@@ -337,6 +410,7 @@ bool Viewer::handleEditKey(const SDL_KeyboardEvent& key) {
             case SDLK_H: hideSelected(); return true;
             case SDLK_U: showAll(); return true;
             case SDLK_I: toggleIsolate(); return true;
+            case SDLK_F: frameSelection(); return true;
             case SDLK_R:
                 gizmoMode_ = gizmoMode_ == GizmoMode::Move ? GizmoMode::Turn : GizmoMode::Move;
                 status_ = gizmoMode_ == GizmoMode::Move ? "Move handles." : "Turn handles (3D and Top views).";
@@ -417,6 +491,71 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     placing_.reset();
     log += std::format("placed {} entities ({} -> {} objects)\n", placed, before, edit_->block().objectCount());
 
+    // A model from the palette (the most used prop), twice: the second shares the first's model slot.
+    const catalog::ModelInfo* prop = nullptr;
+    for (const auto& [id, info] : catalog_.models()) {
+        if (info.kind == catalog::ModelKind::Prop && (!prop || info.uses > prop->uses)) prop = &info;
+    }
+    if (!prop) return fail("no props in the catalog");
+    armModel(prop->id);
+    const auto beforeModels = edit_->block().objectCount();
+    placeAt(cx - viewWidth_ * 0.1, cy);
+    placeAt(cx + viewWidth_ * 0.1, cy);
+    stopPlacing();
+    if (edit_->block().objectCount() != beforeModels + 2) return fail("placing a model: " + status_);
+    const auto propSlot = edit_->modelSlot(prop->id);
+    if (!propSlot) return fail("the placed model has no model slot");
+    log += std::format("placed model {} (\"{}\") twice, model slot {}\n", prop->id, prop->description, *propSlot);
+
+    // An architecture piece lands on the classic grid (piece snap).
+    const catalog::ModelInfo* piece = nullptr;
+    for (const auto& [id, info] : catalog_.models()) {
+        if (info.kind == catalog::ModelKind::Architecture && (!piece || info.uses > piece->uses)) piece = &info;
+    }
+    armModel(piece->id);
+    placeAt(cx, cy);
+    stopPlacing();
+    const auto pieceSlot = selectedSlot();
+    const auto pieceRef = primary();
+    if (!pieceSlot) return fail("placing a piece: " + status_);
+    const auto* placedPiece = edit_->object(*pieceSlot);
+    if (placedPiece->x % 64 || placedPiece->z % 64 || placedPiece->y % 128) {
+        return fail(std::format("piece off the grid at ({}, {}, {})", placedPiece->x, placedPiece->y, placedPiece->z));
+    }
+    log += std::format("placed piece {} on the classic grid at ({}, {}, {})\n", piece->id, placedPiece->x, placedPiece->y,
+                       placedPiece->z);
+
+    // Its texture variants: the whole selection to another texture set, then back with undo.
+    if (piece->twins.empty()) return fail("the most used piece has no texture variants");
+    const auto* twin = catalog_.model(piece->twins.front());
+    selectionToTextureSet(twin->textureArchive);
+    const auto shown = edit_->block().modelRefs[edit_->object(*pieceSlot)->model()->modelIndex].modelIdNum;
+    if (catalog_.model(shown)->textureArchive != twin->textureArchive) return fail("swapping textures: " + status_);
+    edit_->undo();
+    editChanged();
+    log += std::format("piece {} swapped to textures {} (model {}) and back\n", piece->id, twin->textureArchive, shown);
+
+    // A prefab of the piece and the last three entities, placed a quarter turned beside them, then undone.
+    setSelection({placedRefs.end() - 3, placedRefs.end()});
+    clickSelect(scene::Hit{scene::Hit::Kind::Model, *scene::modelIndexOf(scene_, *pieceRef), 0, {}}, true, false);
+    savePrefabFromSelection("Check prefab");
+    const auto made = std::ranges::find_if(prefabs_, [](const auto& p) { return p.name == "Check prefab"; });
+    if (made == prefabs_.end()) return fail("saving a prefab: " + status_);
+    armPrefab(static_cast<std::size_t>(made - prefabs_.begin()));
+    placeTurn_ = 512;
+    const auto beforePrefab = edit_->block().objectCount();
+    placeAt(cx, cy);
+    const auto prefabCount = made->objects().size();
+    stopPlacing();
+    placeTurn_ = 0;
+    if (edit_->block().objectCount() != beforePrefab + prefabCount) return fail("placing the prefab: " + status_);
+    edit_->undo();
+    editChanged();
+    std::filesystem::remove(made->file);
+    reloadPrefabs();
+    log += std::format("prefab of {} objects saved, placed turned, undone\n", prefabCount);
+    setSelection({*pieceRef});
+
     // Move the last one with the grab code, then cancel one move and keep another.
     const auto slot = selectedSlot();
     if (!slot) return fail("nothing selected after placing");
@@ -493,7 +632,7 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     for (auto f : flags_.models) drawn += (f & render::InstanceFlags::kHidden) ? 0 : 1;
     showAll();
     log += std::format("box selected {}, hid them ({} models still drawn), showed all\n", boxed, drawn);
-    setSelection({placedRefs.back()});
+    setSelection({*pieceRef});   // left selected, for a screenshot of its texture variants
 
     // Save, read back through the same path the viewer opens dungeons with, and compare.
     saveEdit();
@@ -595,6 +734,7 @@ void Viewer::drawEditPanel() {
             if (armed) placing_.reset();
             else {
                 if (grabbing_) endGrab(false);
+                placingModel_.reset();
                 placing_ = info.kind;
                 status_ = std::format("Click a floor, wall or ceiling to place {}.", info.name);
             }
@@ -627,6 +767,7 @@ void Viewer::drawEditPanel() {
             if (chosen) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
             if (ImGui::ImageButton("rec", textureRef(textures_.get(sceneryArchive_, r)), {cell, cell})) {
                 sceneryRecord_ = r;
+                placingModel_.reset();
                 placing_ = edit::EntityKind::Scenery;
             }
             if (chosen) ImGui::PopStyleColor();
@@ -792,6 +933,7 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
     if (ImGui::Button("Duplicate")) duplicateSelected();
     ImGui::SameLine();
     if (ImGui::Button("Delete")) deleteSelected();
+    drawTextureVariants();
 }
 
 } // namespace de::app

@@ -447,8 +447,16 @@ Run before every export. Errors block export; warnings don't.
    duplicate/delete as single undo steps (`src/edit/transform.*`: snapshot-based, turns about the group's middle),
    move arrows, free-move square and a turning ring with snap in every view (`viewer_select.cpp`), dragging a selected
    object moves the selection, hiding by kind / by hand / isolating a block (hidden things are neither drawn nor
-   picked). Not yet: hiding what the player cannot reach (needs a walk of the doorways). Next: the piece kit (model
-   palette with thumbnails, texture twins, prefabs, outliner).
+   picked). Not yet: hiding what the player cannot reach (needs a walk of the doorways).
+   *Step 3, the piece kit (2026-11-03): done.* Model palette with rendered thumbnails (`render/thumbnails.*`,
+   `viewer_palette.cpp`), placing models with a preview, into empty space too (new blocks), new model references taken
+   in the block's 750 slots (`BlockEdit::addModel`/`setModel`). Piece snap from measured classic data (`dftool snap`:
+   of 15,783 architecture pieces 96% sit on a 64-unit grid across, 94% on 128 up, 99.9% on quarter turns). Texture
+   twins: models of identical shape (points and faces) in other texture sets, including 826 ARCH3D models no classic
+   block uses (1,181 of 1,460 architecture models have one); swapped singly or as a set for a selection. Prefabs
+   (`project/prefab.*`): a selection saved as a one-root RDB block in World Data JSON under `prefabs/`, anchored at the
+   middle of its bottom, placed turned and snapped with its internal action links remapped. Outliner
+   (`viewer_outliner.cpp`) and framing the selection (F).
 6. **Logic graph.** Graph editor and compiler to action chains; door and lock settings.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).

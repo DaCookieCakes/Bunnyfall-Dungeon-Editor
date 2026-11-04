@@ -31,6 +31,39 @@ Box placedBox(const formats::RdbObject& obj, const formats::RdbModel& m, const M
 
 std::int32_t toInt(double v) { return static_cast<std::int32_t>(std::lround(v)); }
 
+/// A mesh's shape key (the same for models with the same points and faces, in any order, whatever their textures)
+/// and the texture archive most of its faces use.
+std::pair<std::uint64_t, int> shapeOf(const formats::Arch3dMesh& mesh) {
+    std::uint64_t key = 1469598103934665603ull;
+    auto mix = [&](std::int64_t v) {
+        key ^= static_cast<std::uint64_t>(v);
+        key *= 1099511628211ull;
+    };
+    for (const auto& p : mesh.points) {
+        mix(p.x);
+        mix(p.y);
+        mix(p.z);
+    }
+    std::map<int, std::size_t> archives;
+    std::vector<std::vector<std::uint32_t>> faces;
+    for (const auto& plane : mesh.planes) {
+        auto& f = faces.emplace_back();
+        for (const auto& v : plane.vertices) f.push_back(v.point);
+        std::ranges::sort(f);
+        ++archives[plane.textureArchive()];
+    }
+    std::ranges::sort(faces);
+    for (const auto& f : faces) {
+        mix(-1);
+        for (const auto i : f) mix(i);
+    }
+    int archive = -1;
+    if (!archives.empty()) {
+        archive = std::ranges::max_element(archives, [](const auto& a, const auto& b) { return a.second < b.second; })->first;
+    }
+    return {key, archive};
+}
+
 } // namespace
 
 std::string_view kindName(ModelKind kind) {
@@ -223,7 +256,44 @@ Result<Catalog> Catalog::build(const formats::Arena2& arena2) {
             for (const auto& v : plane.vertices) face.push_back(v.point);
         }
         for (const auto& [_, n] : counts) info.uses += n;
+        const auto [key, archive] = shapeOf(*mesh);
+        info.shapeKey = key;
+        info.textureArchive = archive;
         catalog.models_.emplace(id, std::move(info));
+    }
+    std::map<std::uint64_t, std::vector<std::uint32_t>> shapes;
+    for (const auto& [id, info] : catalog.models_) shapes[info.shapeKey].push_back(id);
+    // Models no classic block uses but that are the same shape as one that is: the same piece in other textures,
+    // offered as its texture variants.
+    std::vector<ModelInfo> extra;
+    for (std::size_t r = 0; r < arena2.arch3d.count(); ++r) {
+        const auto id = arena2.arch3d.entry(r).id;
+        if (catalog.models_.contains(id)) continue;
+        auto mesh = formats::parseArch3dMesh(arena2.arch3d.record(r), id);
+        if (!mesh) continue;   // unused and unreadable: nothing to offer
+        const auto [key, archive] = shapeOf(*mesh);
+        const auto same = shapes.find(key);
+        if (same == shapes.end()) continue;
+        const auto& twin = catalog.models_.at(same->second.front());
+        ModelInfo info;
+        info.id = id;
+        info.kind = twin.kind;
+        info.description = twin.description;
+        info.bounds = twin.bounds;
+        info.points = twin.points;
+        info.faces = twin.faces;
+        info.shapeKey = key;
+        info.textureArchive = archive;
+        extra.push_back(std::move(info));
+    }
+    for (auto& info : extra) {
+        shapes[info.shapeKey].push_back(info.id);
+        catalog.models_.emplace(info.id, std::move(info));
+    }
+    for (auto& [id, info] : catalog.models_) {
+        for (const auto other : shapes[info.shapeKey]) {
+            if (other != id) info.twins.push_back(other);
+        }
     }
 
     for (const auto& [name, block] : parsed) {

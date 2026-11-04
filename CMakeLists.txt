@@ -73,8 +73,8 @@ add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp src/edi
 target_link_libraries(de_edit PUBLIC de_catalog PRIVATE de_warnings)
 
 # ---- project: the editor's own file of blocks and dungeons ----
-add_library(de_project STATIC src/project/project.cpp src/project/world_export.cpp)
-target_link_libraries(de_project PUBLIC de_export de_catalog PRIVATE de_warnings)
+add_library(de_project STATIC src/project/project.cpp src/project/world_export.cpp src/project/prefab.cpp)
+target_link_libraries(de_project PUBLIC de_export de_edit de_catalog PRIVATE de_warnings)
 
 # ---- the application: window, renderer, UI ----
 if(DE_BUILD_APP)
@@ -105,6 +105,7 @@ if(DE_BUILD_APP)
     src/render/model_cache.cpp
     src/render/renderer.cpp
     src/render/render_target.cpp
+    src/render/thumbnails.cpp
   )
   target_link_libraries(de_render PUBLIC de_geometry de_scene PkgConfig::EPOXY PRIVATE de_warnings)
 
@@ -115,6 +116,8 @@ if(DE_BUILD_APP)
     src/app/viewer_project.cpp
     src/app/viewer_views.cpp
     src/app/viewer_select.cpp
+    src/app/viewer_palette.cpp
+    src/app/viewer_outliner.cpp
     src/app/viewer_layout.cpp
     src/app/theme.cpp
     src/app/config.cpp
@@ -163,6 +166,7 @@ if(DE_BUILD_TESTS)
     tests/camera_test.cpp
     tests/export_test.cpp
     tests/edit_test.cpp
+    tests/prefab_test.cpp
     tests/transform_test.cpp
     tests/grid_test.cpp
     tests/project_test.cpp

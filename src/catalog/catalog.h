@@ -31,6 +31,9 @@ struct ModelInfo {
     std::size_t uses = 0;       ///< Placements across all classic dungeon blocks.
     std::vector<Vec3> points;   ///< Editor space, block units.
     std::vector<std::vector<std::uint32_t>> faces;   ///< Each face's points, in order around it.
+    std::uint64_t shapeKey = 0;   ///< Same for models with exactly the same points and faces.
+    int textureArchive = -1;      ///< The texture archive most of its faces use (its texture set).
+    std::vector<std::uint32_t> twins;   ///< Other models of the same shape (other textures), ascending.
 };
 
 /// The side of a block a port sits on. West is x = 0, east x = 2048, south z = 0, north z = 2048.

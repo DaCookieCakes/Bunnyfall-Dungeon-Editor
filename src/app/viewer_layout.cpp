@@ -66,7 +66,7 @@ void Viewer::drawUi() {
             }
             if (edit_) ImGui::Text("editing %s%s", edit_->name().c_str(), edit_->dirty() ? " *" : "");
             else ImGui::TextDisabled("viewing");
-            if (placing_) {
+            if (placingAnything()) {
                 separator();
                 ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "placing: click a surface, right-click stops");
             } else if (grabbing_) {
@@ -91,6 +91,8 @@ void Viewer::drawUi() {
 
     drawViewsWindow();
     if (showBrowse_) drawBrowser();
+    if (showModels_) drawModelPalette();
+    if (showOutliner_) drawOutliner();
     if (showProperties_) drawInspector();
     if (showViewPanel_) drawViewPanel();
     if (showEdit_) drawEditPanel();
@@ -111,11 +113,13 @@ void Viewer::drawUi() {
                     {"Wheel (2D)", "zoom about the pointer"},
                     {"Shift+Z", "maximise the view under the pointer / back to four"},
                     {"Home", "fit the 2D views to the dungeon"},
+                    {"F", "frame the selection in every view"},
                     {"Left-click", "select (Shift adds, Ctrl toggles); with a palette entry armed, place"},
                     {"Left-drag", "a box selects (Shift adds, Ctrl toggles); on a selected object, moves the selection"},
                     {"Ctrl+A", "select everything shown (in the edited block, when editing)"},
                     {"Handles", "arrows move along X/Y/Z, the square freely; the ring turns (R switches)"},
                     {"G", "move the selection with the pointer (2D views keep its height or depth)"},
+                    {"[ and ]", "turn the model being placed (Shift: by the turn snap)"},
                     {"H / U / I", "hide the selection / show everything / isolate the selection's block"},
                     {"Arrows, PgUp/PgDn", "nudge (Shift: a big step)"},
                     {"Ctrl+D / Delete", "duplicate / delete"},
@@ -161,6 +165,8 @@ void Viewer::drawMenuBar() {
     }
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Browse", nullptr, &showBrowse_);
+        ImGui::MenuItem("Models", nullptr, &showModels_);
+        ImGui::MenuItem("Outliner", nullptr, &showOutliner_);
         ImGui::MenuItem("Properties", nullptr, &showProperties_);
         ImGui::MenuItem("Edit", nullptr, &showEdit_);
         ImGui::MenuItem("View options", nullptr, &showViewPanel_);
@@ -172,6 +178,7 @@ void Viewer::drawMenuBar() {
             if (ImGui::MenuItem(label.c_str(), nullptr, maximised_ == i)) maximised_ = i;
         }
         if (ImGui::MenuItem("Fit 2D views", "Home")) frameOrthoViews();
+        if (ImGui::MenuItem("Frame the selection", "F", false, !selection_.empty())) frameSelection();
         ImGui::Separator();
         if (ImGui::MenuItem("Reset layout")) resetLayout_ = true;
         ImGui::EndMenu();
@@ -188,9 +195,9 @@ void Viewer::drawToolbar() {
     const float height = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2;
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::BeginViewportSideBar("##toolbar", viewport, ImGuiDir_Up, height, flags)) {
-        bool selecting = !placing_;
+        bool selecting = !placingAnything();
         if (toggle("Select", selecting, "Click picks; Shift adds, Ctrl toggles, drag for a box (Esc)") && selecting) {
-            placing_.reset();
+            stopPlacing();
         }
         ImGui::SameLine();
         bool moveMode = gizmoMode_ == GizmoMode::Move, turnMode = !moveMode;
@@ -211,6 +218,9 @@ void Viewer::drawToolbar() {
             if (ImGui::Combo("##turnsnap", &index, labels, 5)) turnSnap_ = turns[index];
             ImGui::SetItemTooltip("Turn snap, degrees");
         }
+        ImGui::SameLine();
+        toggle("Piece snap", pieceSnap_,
+               "Architecture and doors snap to the classic grid: 64 units across, 128 up, quarter turns");
         separator();
         toggle("Grid", drawOptions_.grid, "The sizing grid in the 3D view");
         ImGui::SameLine();
@@ -259,12 +269,15 @@ void Viewer::buildDefaultLayout(unsigned dockspace) {
     ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspace, viewport->WorkSize);
     ImGuiID centre = dockspace;
-    const ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.18f, nullptr, &centre);
+    ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.2f, nullptr, &centre);
+    const ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.5f, nullptr, &left);
     ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.24f, nullptr, &centre);
     const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.3f, nullptr, &centre);
     const ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.55f, nullptr, &right);
     ImGui::DockBuilderDockWindow("Browse", left);
+    ImGui::DockBuilderDockWindow("Models", leftBottom);
     ImGui::DockBuilderDockWindow("Properties", right);
+    ImGui::DockBuilderDockWindow("Outliner", right);
     ImGui::DockBuilderDockWindow("View", right);
     ImGui::DockBuilderDockWindow("Edit", rightBottom);
     ImGui::DockBuilderDockWindow("Project", bottom);

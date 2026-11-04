@@ -106,6 +106,7 @@ void Viewer::drawViewsWindow() {
         }
         if (grabbing_) grabTo(mouseX_, mouseY_);
         continueDrag();
+        updateGhost();
     }
     ImGui::End();
 }
@@ -195,7 +196,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (grabbing_) endGrab(true);
-        else if (placing_) placeAt(mx, my);
+        else if (placingAnything()) placeAt(mx, my);
         else if (!overHandle && drag_.kind == Drag::Kind::None) {
             // Decided when the button comes up (a click selects) or the pointer moves (a box, or a move).
             drag_ = {};
@@ -208,7 +209,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
     }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && drag_.kind == Drag::Kind::None) {
         if (grabbing_) endGrab(false);
-        else if (placing_) placing_.reset();
+        else if (placingAnything()) stopPlacing();
         else if (!ortho) {
             looking_ = true;
             if (window_) SDL_SetWindowRelativeMouseMode(window_, true);
@@ -251,7 +252,18 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
 }
 
 void Viewer::renderViews(float pixelsPerPoint) {
+    thumbnails_.renderPending(*renderer_);
     updateFlags();
+    // The preview, drawn tinted as if selected, for this frame only.
+    const auto realModels = scene_.models.size(), realFlats = scene_.flats.size();
+    for (const auto& g : ghostModels_) {
+        scene_.models.push_back(g);
+        flags_.models.push_back(render::InstanceFlags::kSelected);
+    }
+    for (const auto& g : ghostFlats_) {
+        scene_.flats.push_back(g);
+        flags_.flats.push_back(render::InstanceFlags::kSelected);
+    }
     for (std::size_t i = 0; i < views_.size(); ++i) {
         auto& v = views_[i];
         if (!v.shown) continue;
@@ -268,6 +280,10 @@ void Viewer::renderViews(float pixelsPerPoint) {
         }
         renderer_->draw(scene_, cameraOf(i), w, h, options, flags_);
     }
+    scene_.models.resize(realModels);
+    scene_.flats.resize(realFlats);
+    flags_.models.resize(realModels);
+    flags_.flats.resize(realFlats);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 

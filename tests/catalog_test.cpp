@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
 
@@ -149,8 +150,13 @@ TEST_CASE("ARENA2 catalog: models and blocks") {
         return;
     }
     // Repaired blocks (DFU's FixRdbData): N0000022/23 lose their bad door, model 09004, used nowhere else.
-    CHECK(c->models().size() == 1042);
-    CHECK(c->model(9004) == nullptr);
+    // Models in use; the rest are unused same-shape variants (texture twins) of those.
+    const auto used = std::ranges::count_if(c->models(), [](const auto& m) { return m.second.uses > 0; });
+    CHECK(used == 1042);
+    CHECK((c->model(9004) == nullptr || c->model(9004)->uses == 0));
+    for (const auto& [id, m] : c->models()) {
+        if (m.uses == 0) CHECK_FALSE(m.twins.empty());
+    }
     CHECK(c->blocks().size() == 187);
 
     const auto* corridor = c->model(67000);
@@ -170,4 +176,25 @@ TEST_CASE("ARENA2 catalog: models and blocks") {
     int exits = 0;
     for (const auto& b : c->blocks()) exits += b.hasExitDoor ? 1 : 0;
     CHECK(exits > 0);
+}
+
+TEST_CASE("ARENA2 catalog: the corridor piece comes in three texture sets of one shape") {
+    const Catalog* c = catalog();
+    if (!c) {
+        MESSAGE("skipped: set DE_ARENA2 to an ARENA2 directory");
+        return;
+    }
+    const auto* m = c->model(67000);
+    REQUIRE(m);
+    CHECK(std::ranges::find(m->twins, 67100u) != m->twins.end());
+    CHECK(std::ranges::find(m->twins, 67200u) != m->twins.end());
+    CHECK(c->model(67100)->textureArchive != m->textureArchive);
+    std::size_t architecture = 0, withTwins = 0;
+    for (const auto& [id, info] : c->models()) {
+        if (info.kind != de::catalog::ModelKind::Architecture) continue;
+        ++architecture;
+        if (!info.twins.empty()) ++withTwins;
+    }
+    MESSAGE(withTwins << " of " << architecture << " architecture models come in other textures");
+    CHECK(withTwins > architecture / 2);
 }

@@ -234,3 +234,56 @@ TEST_CASE("ARENA2: an edited block saves as a patch, loads back the same, and sa
     REQUIRE(none);
     CHECK_FALSE(none->has_value());
 }
+
+TEST_CASE("models: adding takes a free model slot once, reuses it, and undoes as one step") {
+    BlockEdit e("TEST.RDB", 0, 0, smallBlock(), smallBlock());
+    de::formats::RdbObject obj;
+    obj.resource = de::formats::RdbModel{};
+    const auto a = e.addModel(4321, "C00X", obj);
+    REQUIRE(a);
+    const auto slot = e.modelSlot(4321);
+    REQUIRE(slot);
+    CHECK(e.block().modelRefs[*slot].modelId == "4321");
+    CHECK(e.block().modelRefs[*slot].description == "C00");   // three characters, as the file keeps it
+    CHECK(e.object(*a)->model()->modelIndex == *slot);
+    const auto b = e.addModel(4321, "C00", obj);
+    REQUIRE(b);
+    CHECK(e.object(*b)->model()->modelIndex == *slot);
+    CHECK(e.object(*a)->position != e.object(*b)->position);   // each its own save identity
+    CHECK(e.undo());
+    CHECK(e.undo());
+    CHECK_FALSE(e.modelSlot(4321));   // the slot went with the first add
+    CHECK(e.block().objectCount() == 1);
+    // Flats are not models.
+    CHECK_FALSE(e.addModel(1, "XXX", makeEntity(EntityKind::Treasure, 0, 0, 0)));
+}
+
+TEST_CASE("placement: models rest their bounds on floors, under ceilings and against walls") {
+    const de::catalog::Box bounds{{-100, -20, -50}, {100, 180, 50}};
+    const auto floor = restingModelOrigin({0, 500, 0}, {0, 1, 0}, bounds);
+    CHECK(floor.y + bounds.min.y == doctest::Approx(500));
+    const auto ceiling = restingModelOrigin({0, 500, 0}, {0, -1, 0}, bounds);
+    CHECK(ceiling.y + bounds.max.y == doctest::Approx(500));
+    // A wall facing -X (the model sits on the wall's -X side): its +X side touches the wall.
+    const auto wall = restingModelOrigin({1000, 500, 0}, {-1, 0, 0}, bounds);
+    CHECK(wall.x + bounds.max.x == doctest::Approx(1000));
+    const auto north = restingModelOrigin({0, 500, 1000}, {0, 0, 1}, bounds);   // a wall facing +Z
+    CHECK(north.z + bounds.min.z == doctest::Approx(1000));
+}
+
+TEST_CASE("models: another model on the same object keeps its place and is one undo step") {
+    BlockEdit e("TEST.RDB", 0, 0, smallBlock(), smallBlock());
+    de::formats::RdbObject obj;
+    obj.x = 128;
+    obj.resource = de::formats::RdbModel{.yRotation = 512};
+    const auto a = e.addModel(67000, "C00", obj);
+    REQUIRE(a);
+    CHECK(e.setModel(*a, 67100, "C00"));
+    const auto* m = e.object(*a)->model();
+    CHECK(e.block().modelRefs[m->modelIndex].modelIdNum == 67100);
+    CHECK(m->yRotation == 512);
+    CHECK(e.object(*a)->x == 128);
+    CHECK(e.undo());
+    CHECK(e.block().modelRefs[e.object(*a)->model()->modelIndex].modelIdNum == 67000);
+    CHECK_FALSE(e.setModel({1, 0}, 1, "XXX"));   // the treasure is not a model
+}

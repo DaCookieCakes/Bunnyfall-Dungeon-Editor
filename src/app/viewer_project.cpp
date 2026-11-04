@@ -83,6 +83,7 @@ Result<void> Viewer::setProjectFile(std::filesystem::path file) {
     projectDirty_ = false;
     issuesStale_ = true;
     if (!project_.dungeons().empty()) currentDungeon_ = project_.dungeons().front().number;
+    reloadPrefabs();
     return {};
 }
 

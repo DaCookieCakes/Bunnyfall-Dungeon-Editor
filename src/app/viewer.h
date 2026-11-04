@@ -7,11 +7,13 @@
 #include "export/patch_folder.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
+#include "project/prefab.h"
 #include "project/project.h"
 #include "project/world_export.h"
 #include "app/config.h"
 #include "render/render_target.h"
 #include "render/renderer.h"
+#include "render/thumbnails.h"
 
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -160,6 +162,55 @@ private:
     void continueDrag();
     void drawShowMenu();
 
+    /// The editor-space point where the pointer meets the dungeon, and the scene block it belongs to.
+    struct SurfacePoint {
+        catalog::Vec3 point, normal;
+        std::size_t sceneBlock;
+    };
+
+    // ---- the model palette (viewer_palette.cpp) ----
+    void drawModelPalette();
+    [[nodiscard]] bool placingAnything() const {
+        return placing_.has_value() || placingModel_.has_value() || placingPrefab_.has_value();
+    }
+    void stopPlacing() {
+        placing_.reset();
+        placingModel_.reset();
+        placingPrefab_.reset();
+        ghostModels_.clear();
+        ghostFlats_.clear();
+    }
+    // Prefabs: kept in a "prefabs" folder beside the project file.
+    [[nodiscard]] std::filesystem::path prefabFolder() const { return projectFile_.parent_path() / "prefabs"; }
+    void reloadPrefabs();
+    void drawPrefabList();
+    void armPrefab(std::size_t index);
+    /// The selection (in the primary's block) as a prefab, anchored at the middle of its bottom.
+    void savePrefabFromSelection(const std::string& name);
+    /// Where the armed prefab would go for the pointer at (x, y): its anchor (file units) and scene block.
+    [[nodiscard]] std::optional<std::pair<std::array<std::int32_t, 3>, std::size_t>> prefabPlacement(double x, double y);
+    /// Fills the preview (ghostModels_, ghostFlats_) for what is armed, under the pointer.
+    void updateGhost();
+    void armModel(std::uint32_t id);
+    /// The same pieces in other textures: the primary's variants, and texture sets for the whole selection.
+    void drawTextureVariants();
+    /// Every selected model that comes in texture archive `archive` (itself or a twin) is shown in it; one undo step.
+    void selectionToTextureSet(int archive);
+    /// Every selected model of `shapeKey`'s shape becomes `modelId`; one undo step.
+    void selectionToModel(std::uint64_t shapeKey, std::uint32_t modelId);
+    /// Where a model being placed would go for the pointer at (x, y): its instance (for the preview) and scene block.
+    [[nodiscard]] std::optional<std::pair<scene::ModelInstance, std::size_t>> modelPlacement(double x, double y);
+    /// Under the pointer: the dungeon's surface, else (empty space) the grid's level plane, or in the Front and Side
+    /// views the plane through the view's middle. Only inside a scene block.
+    [[nodiscard]] std::optional<SurfacePoint> placementSurface(double x, double y);
+
+    // ---- the outliner (viewer_outliner.cpp) ----
+    void drawOutliner();
+    /// Fit the 2D views around the selection and back the 3D camera off until it is all in view.
+    void frameSelection();
+    /// The drawn instance of an object, if it is drawn.
+    [[nodiscard]] std::optional<std::pair<scene::Hit::Kind, std::size_t>> instanceOf(const scene::ObjectRef& ref) const;
+
     // ---- the frame (viewer_layout.cpp) ----
     void drawMenuBar();
     void drawToolbar();
@@ -191,11 +242,7 @@ private:
     void saveEdit();
     [[nodiscard]] bool editing(const scene::ObjectRef& ref) const;
     [[nodiscard]] std::optional<edit::ObjectSlot> selectedSlot() const;
-    /// The editor-space point where the pointer meets the dungeon, and the scene block it belongs to.
-    struct SurfacePoint {
-        catalog::Vec3 point, normal;
-        std::size_t sceneBlock;
-    };
+    /// The editor-space point where the pointer meets the dungeon (models only), and its scene block.
     [[nodiscard]] std::optional<SurfacePoint> surfaceAt(double x, double y);
     void placeAt(double x, double y);
     void startGrab();
@@ -233,7 +280,17 @@ private:
     void discardEdit();
     [[nodiscard]] std::pair<double, double> entitySize(const formats::RdbObject& obj);
     /// The file coordinates (block-local) of an editor-space point in a scene block.
-    [[nodiscard]] std::array<std::int32_t, 3> toFile(catalog::Vec3 world, std::size_t sceneBlock) const;
+    /// Snapped to `steps` (x, y, z file units), by default the snap setting across and none up.
+    [[nodiscard]] std::array<std::int32_t, 3> toFile(catalog::Vec3 world, std::size_t sceneBlock,
+                                                     std::optional<std::array<int, 3>> steps = std::nullopt) const;
+    /// Architecture and doors: what piece snap puts on the classic grid.
+    [[nodiscard]] bool isPiece(std::uint32_t modelId) const;
+    [[nodiscard]] bool selectionHasPieces() const;
+    /// The grid a move snaps to (x, y, z file units): with pieces and piece snap on, the classic grid (64 across, 128
+    /// up; 96% and 94% of classic architecture sits on it), else the snap setting across and free up.
+    [[nodiscard]] std::array<int, 3> moveSteps(bool pieces) const;
+    /// Turn steps: quarter turns for pieces with piece snap on (99.9% of classic ones), else the turn snap.
+    [[nodiscard]] int turnStep(bool pieces) const { return pieces && pieceSnap_ ? 512 : turnSnap_; }
 
     const formats::Arena2& arena2_;
     catalog::Catalog catalog_;
@@ -258,6 +315,7 @@ private:
     std::optional<std::size_t> isolated_;                   // the one scene block shown
     render::InstanceFlags flags_;
     enum class GizmoMode { Move, Turn } gizmoMode_ = GizmoMode::Move;
+    bool pieceSnap_ = true;                                 // architecture and doors on the classic grid
     int turnSnap_ = 128;                                    // file rotation units (22.5 degrees); 1 = off
     // A drag in a view: a box being drawn, or a handle (or a selected object) being dragged.
     struct Drag {
@@ -301,6 +359,22 @@ private:
     std::optional<edit::BlockEdit> edit_;
     std::size_t editBlock_ = 0;                  // the scene block the edit started from
     std::optional<edit::EntityKind> placing_;    // a palette entry is armed: the next click places it
+    std::optional<std::uint32_t> placingModel_;  // a model is armed instead
+    std::int32_t placeTurn_ = 0;                 // the armed model's yRotation ([ and ] turn it)
+    std::optional<std::size_t> placingPrefab_;   // or a prefab (index into prefabs_)
+    std::vector<project::Prefab> prefabs_;
+    char prefabName_[64] = "";
+    std::vector<scene::ModelInstance> ghostModels_;   // the preview of what a click would place, drawn tinted
+    std::vector<scene::FlatInstance> ghostFlats_;
+    render::Thumbnails thumbnails_;
+    char modelFilter_[32] = {};
+    int paletteKind_ = 0;                        // Architecture, Doors, Props, All
+    float thumbSize_ = 72;
+    bool showModels_ = true;
+    bool showUnusedModels_ = false;
+    bool showOutliner_ = true;
+    char outlinerFilter_[48] = {};
+    int outlinerKind_ = -1;                      // a Category, or -1 for all              // the palette lists variants no classic block uses
     int sceneryArchive_ = 210, sceneryRecord_ = 0;
     int enemyType_ = 7;                          // Orc
     int snap_ = 16;                              // file units; 1 = off

@@ -41,7 +41,7 @@ using namespace de::formats;
 namespace {
 
 int usage() {
-    std::println(stderr, "usage: dftool <arena2-dir> stats | block <NAME> | dungeon <name|locationId> | model <id> |"
+    std::println(stderr, "usage: dftool <arena2-dir> stats | snap | block <NAME> | dungeon <name|locationId> | model <id> |"
                          " models [N] | ports [NAME] | boxes NAME |"
                          " export-block NAME OUT | make-patch BASE EDITED OUT | rebuild-patch PATCH [OUT]");
     return 2;
@@ -288,6 +288,55 @@ int cmdModels(const Arena2& a, std::size_t limit) {
     return 0;
 }
 
+/// How classic architecture sits: the largest grid step each piece's position is a multiple of, per axis, and the
+/// rotations used. What the editor's snapping for pieces is based on.
+int cmdSnap(const Arena2& a) {
+    auto catalog = de::catalog::Catalog::build(a);
+    if (!catalog) return report(catalog);
+    int failures = 0;
+    const auto blocks = loadAllRdb(a, failures);
+    std::map<int, std::size_t> stepX, stepY, stepZ;
+    std::map<std::int32_t, std::size_t> rotY, rotXZ;
+    std::size_t pieces = 0;
+    auto largestStep = [](std::int32_t v) {
+        for (int s : {1024, 512, 256, 128, 64, 32, 16, 8, 4, 2}) {
+            if (v % s == 0) return s;
+        }
+        return 1;
+    };
+    for (const auto& [name, block] : blocks) {
+        for (const auto& root : block.roots) {
+            for (const auto& obj : root.objects) {
+                const auto* m = obj.model();
+                if (!m) continue;
+                const auto* info = catalog->model(block.modelRefs[m->modelIndex].modelIdNum);
+                if (!info || info->kind != de::catalog::ModelKind::Architecture) continue;
+                ++pieces;
+                ++stepX[largestStep(obj.x)];
+                ++stepY[largestStep(obj.y)];
+                ++stepZ[largestStep(obj.z)];
+                ++rotY[((m->yRotation % 2048) + 2048) % 2048];
+                if (m->xRotation || m->zRotation) ++rotXZ[m->xRotation * 10000 + m->zRotation];
+            }
+        }
+    }
+    std::println("{} architecture pieces in {} blocks", pieces, blocks.size());
+    for (const auto& [label, steps] : {std::pair{"x", &stepX}, std::pair{"y", &stepY}, std::pair{"z", &stepZ}}) {
+        std::print("{} largest step:", label);
+        for (const auto& [s, n] : *steps) std::print("  {}:{:.1f}%", s, 100 * share(n, pieces));
+        std::println("");
+    }
+    std::print("y rotations:");
+    for (const auto& [r, n] : rotY) std::print("  {}:{}", r, n);
+    std::println("");
+    std::println("pieces tilted (x or z rotation): {}", [&] {
+        std::size_t n = 0;
+        for (const auto& [r, c] : rotXZ) n += c;
+        return n;
+    }());
+    return 0;
+}
+
 int cmdPorts(const Arena2& a, std::string name) {
     auto catalog = de::catalog::Catalog::build(a);
     if (!catalog) return report(catalog);
@@ -439,6 +488,7 @@ int main(int argc, char** argv) {
     if (!arena2) return report(arena2);
     const std::string_view cmd = argv[2];
     if (cmd == "stats") return cmdStats(*arena2);
+    if (cmd == "snap") return cmdSnap(*arena2);
     if (cmd == "models") return cmdModels(*arena2, argc > 3 ? std::stoul(argv[3]) : 30);
     if (cmd == "ports") return cmdPorts(*arena2, argc > 3 ? argv[3] : "");
     if (argc < 4) return usage();
