@@ -125,6 +125,17 @@ std::unordered_set<scene::ObjectRef, Viewer::RefHash> Viewer::selectedChains() {
 }
 
 void Viewer::drawLogicLinks(std::size_t index) {
+    if (linkFrom_ && pointerView_ == index) {   // the link being picked follows the pointer
+        if (const auto p = toScreen(index, objectCentre(*linkFrom_))) {
+            const auto mouse = ImGui::GetIO().MousePos;
+            auto* list = ImGui::GetWindowDrawList();
+            list->PushClipRect(views_[index].min, add(views_[index].min, views_[index].size), true);
+            dashedLine(list, *p, mouse, kChainColour, 2.0f);
+            arrowHead(list, *p, mouse, kChainColour, 11.0f);
+            list->AddText({mouse.x + 12, mouse.y + 4}, kChainColour, "next object?");
+            list->PopClipRect();
+        }
+    }
     if (linkMode_ == LinkMode::Off) return;
     const auto& links = sceneLinks();
     if (links.empty()) return;
@@ -192,7 +203,8 @@ void Viewer::drawLogicSection(const scene::ObjectRef& ref) {
         if (l.from == ref) outgoing = &l;
     }
     const bool skippedRecord = m && m->hasAction() && m->action.flags == 0;
-    if (!node && !door && incoming.empty() && !skippedRecord) return;
+    const bool editable = editing(ref) && logic::canAct(obj);
+    if (!node && !door && incoming.empty() && !skippedRecord && !editable) return;
 
     ImGui::Separator();
     if (!ImGui::CollapsingHeader("Logic", ImGuiTreeNodeFlags_DefaultOpen)) return;
@@ -215,6 +227,10 @@ void Viewer::drawLogicSection(const scene::ObjectRef& ref) {
         } else {
             ImGui::TextUnformatted("Door, not locked");
         }
+    }
+    if (editable) {
+        drawLogicEditor(ref, incoming);
+        if (node) ImGui::SeparatorText("In the game");
     }
     if (node) {
         const auto d = logic::describe(*node, door, texts_ ? &*texts_ : nullptr);
@@ -244,6 +260,12 @@ void Viewer::drawLogicSection(const scene::ObjectRef& ref) {
                     break;
             }
         }
+        if (ImGui::SmallButton(preview_ ? "Stop preview" : "Preview")) {
+            if (preview_) preview_.reset();
+            else startPreview(ref);
+        }
+        ImGui::SetItemTooltip("Play what happens when this is set off: its chain's moves, turns and swings,\n"
+                              "forward and then back (as the game does the next time). Esc stops it.");
     } else if (skippedRecord) {
         ImGui::TextDisabled("Has an action record of kind 0, which the game skips (and its link with it).");
     }
@@ -302,6 +324,407 @@ void Viewer::drawLogicSection(const scene::ObjectRef& ref) {
         ImGui::TreePop();
     }
     ImGui::PopID();
+}
+
+// ---- editing ----
+
+namespace {
+
+struct ActionChoice {
+    std::uint8_t kind;
+    const char* label;
+    const char* help;
+    bool models, flats;
+};
+constexpr ActionChoice kActionChoices[] = {
+    {logic::action::kNone, "No action", "Takes the action away (and its link).", true, true},
+    {logic::action::kMove, "Move", "Slides it, then back the next time.", true, true},
+    {logic::action::kTurn, "Turn", "Turns it about its own axis, then back the next time.", true, false},
+    {logic::action::kOpenDoor, "Swing open", "A door opens itself; anything else becomes a lockless swinging door "
+                                             "(secret walls, trapdoors).", true, false},
+    {logic::action::kCloseDoor, "Close door", "A door closes itself.", true, false},
+    {logic::action::kLockDoor, "Lock door", "A door locks itself (level 16 if it had no lock).", true, false},
+    {logic::action::kUnlockDoor, "Unlock door", "A door unlocks itself.", true, false},
+    {logic::action::kTeleport, "Teleport", "Moves the player to the next object.", true, true},
+    {logic::action::kShowText, "Show text", "Shows one of the game's messages.", true, true},
+    {logic::action::kShowTextWithInput, "Ask a riddle", "Asks one of the game's riddles; the chain goes on only on a "
+                                                       "right answer.", true, true},
+    {logic::action::kDoorText, "Door text", "Shows a message the first time (castle guards use these).", true, true},
+    {logic::action::kHurt22, "Hurt", "Hurts the player: an amount times their level.", true, true},
+    {logic::action::kDrainMagicka, "Drain magicka", "Takes magicka from the player.", true, true},
+    {logic::action::kCastSpell, "Cast spell", "Casts a spell at the player (then only every 22nd time).", true, true},
+    {logic::action::kSetGlobalVar, "Set global variable", "Sets one of the 64 quest variables.", true, true},
+    {logic::action::kActivate, "Pass it on", "Does nothing itself; sets off the next object. For levers, plates.",
+     true, true},
+};
+
+struct TriggerChoice {
+    std::uint8_t trigger;
+    const char* label;
+};
+constexpr TriggerChoice kTriggerChoices[] = {
+    {logic::trigger::kNone, "Only when set off by another"},
+    {logic::trigger::kUse, "Used"},
+    {logic::trigger::kWalkOn, "Stood on"},
+    {logic::trigger::kWalkInto, "Walked into"},
+    {logic::trigger::kAttack, "Hit"},
+    {logic::trigger::kUseOrBump, "Used or walked into"},
+    {logic::trigger::kUseHitOrBump, "Used, hit or walked into"},
+    {logic::trigger::kDoor, "Opened or closed (doors)"},
+};
+
+constexpr const char* kDirections[] = {"Up", "Down", "+X", "-X", "+Z", "-Z"};
+constexpr const char* kTurnAxes[] = {"X", "Y (upright)", "Z"};
+
+bool usesIndex(std::uint8_t kind) {
+    return kind == logic::action::kShowText || kind == logic::action::kShowTextWithInput ||
+           kind == logic::action::kDoorText || kind == logic::action::kCastSpell || kind == logic::action::kHurt21;
+}
+
+} // namespace
+
+void Viewer::commitObject(const scene::ObjectRef& ref, formats::RdbObject obj) {
+    if (!edit_ || !editing(ref)) return;
+    edit_->replace({ref.root, ref.object}, std::move(obj));
+    editChanged();
+}
+
+void Viewer::drawLogicEditor(const scene::ObjectRef& ref, const std::vector<const SceneLink*>& incoming) {
+    const auto* current = edit_->object({ref.root, ref.object});
+    if (!current) return;
+    auto obj = *current;
+    const auto& block = edit_->block();
+    const auto* m = obj.model();
+    const bool door = m && logic::isActionDoor(block, *m);
+    const bool flat = obj.flat() != nullptr;
+    const auto node = logic::nodeOf(block, obj);
+    bool changed = false, endGesture = false;
+    auto gesture = [&] {   // a dragged value is one undo step, ended after its last change is in
+        if (ImGui::IsItemActivated()) edit_->beginGesture();
+        if (ImGui::IsItemDeactivated()) endGesture = true;
+    };
+    const float width = std::max(120.0f, ImGui::GetContentRegionAvail().x * 0.6f);
+
+    // What it does.
+    const std::uint8_t raw = node ? node->rawAction : 0;
+    std::string current_label = "No action";
+    for (const auto& c : kActionChoices) {
+        if (c.kind == raw) current_label = c.label;
+    }
+    if (node && (raw >= logic::action::kPlusX && raw <= logic::action::kMinusZ)) current_label = "Move";
+    else if (node && !std::ranges::any_of(kActionChoices, [&](const ActionChoice& c) { return c.kind == raw; })) {
+        current_label = std::format("{} ({})", logic::actionName(node->action), raw);
+    }
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::BeginCombo("Action", current_label.c_str())) {
+        for (const auto& c : kActionChoices) {
+            if (flat ? !c.flats : !c.models) continue;
+            if (ImGui::Selectable(c.label, c.kind == raw)) {
+                if (c.kind == logic::action::kMove) {
+                    if (!node || !logic::moveOf(*node)) logic::setMove(obj, {logic::Direction::Up, 64, 40});
+                } else if (c.kind == logic::action::kTurn) {
+                    if (!node || !logic::turnOf(*node)) logic::setTurn(obj, {logic::TurnAxis::Y, 90, 30});
+                } else {
+                    logic::setAction(obj, c.kind);
+                    // Values that make sense straight away.
+                    switch (c.kind) {
+                        case logic::action::kShowText: logic::setIndex(obj, 4); break;
+                        case logic::action::kShowTextWithInput: logic::setIndex(obj, 4); break;
+                        case logic::action::kDoorText: logic::setIndex(obj, 5); logic::setAxis(obj, 0); break;
+                        case logic::action::kHurt22: case logic::action::kDrainMagicka: logic::setAxis(obj, 2); break;
+                        case logic::action::kSetGlobalVar: logic::setAxis(obj, 0); break;
+                        default: break;
+                    }
+                    if (!usesIndex(c.kind) && !node) logic::setIndex(obj, 0);
+                }
+                changed = true;
+            }
+            ImGui::SetItemTooltip("%s", c.help);
+        }
+        ImGui::EndCombo();
+    }
+
+    if (node) {
+        // When.
+        const auto lock = logic::startingLock(block, obj);
+        if (lock) {
+            ImGui::TextDisabled("Set off: only by another object, or by opening it.");
+            ImGui::TextDisabled("(A locked door can't have its own trigger: they share a field.)");
+        } else {
+            const char* label = "(other)";
+            for (const auto& t : kTriggerChoices) {
+                if (t.trigger == node->trigger) label = t.label;
+            }
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::BeginCombo("Set off when", label)) {
+                for (const auto& t : kTriggerChoices) {
+                    if (t.trigger == logic::trigger::kDoor && !door) continue;
+                    if (ImGui::Selectable(t.label, t.trigger == node->trigger)) {
+                        logic::setTrigger(obj, t.trigger);
+                        changed = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // How: the values this action reads.
+        const std::uint8_t kind = node->action;
+        if (const auto move = logic::moveOf(*node)) {
+            auto mv = *move;
+            bool moved = false;
+            int dir = static_cast<int>(mv.direction);
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::Combo("Direction", &dir, kDirections, 6)) {
+                mv.direction = static_cast<logic::Direction>(dir);
+                moved = true;
+            }
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::DragInt("Distance", &mv.units, flat ? 8.0f : 4.0f, flat ? 8 : 0, flat ? 2040 : 8192, "%d units")) {
+                moved = true;
+            }
+            gesture();
+            ImGui::SameLine();
+            ImGui::TextDisabled("%.1f m", mv.units / 40.0);
+            if (flat) {
+                ImGui::TextDisabled("A flat moves in steps of 8 units, always over 2.5 s.");
+            } else {
+                float secs = float(mv.duration) / 20.0f;
+                ImGui::SetNextItemWidth(width);
+                if (ImGui::DragFloat("Time", &secs, 0.05f, 0.0f, 60.0f, "%.2f s")) {
+                    mv.duration = static_cast<std::uint32_t>(std::lround(std::max(0.0f, secs) * 20));
+                    moved = true;
+                }
+                gesture();
+            }
+            if (moved) {
+                logic::setMove(obj, mv);
+                changed = true;
+            }
+        } else if (kind == logic::action::kTurn) {
+            auto turn = logic::turnOf(*node).value_or(logic::Turn{logic::TurnAxis::Y, 0, node->duration});
+            int axis = static_cast<int>(turn.axis);
+            float degrees = float(turn.degrees), secs = float(turn.duration) / 20.0f;
+            bool turned = false;
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::Combo("About", &axis, kTurnAxes, 3)) turned = true;
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::DragFloat("Angle", &degrees, 1.0f, -360.0f, 360.0f, "%.1f deg")) turned = true;
+            gesture();
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::DragFloat("Time", &secs, 0.05f, 0.0f, 60.0f, "%.2f s")) turned = true;
+            gesture();
+            if (node->description == "LID" || node->description == "WHE") {
+                ImGui::TextDisabled("%s models always turn their own fixed way.", node->description.c_str());
+            }
+            if (turned) {
+                logic::setTurn(obj, {static_cast<logic::TurnAxis>(axis), degrees,
+                                     static_cast<std::uint32_t>(std::lround(std::max(0.0f, secs) * 20))});
+                changed = true;
+            }
+        } else if (kind == logic::action::kShowText || kind == logic::action::kShowTextWithInput ||
+                   kind == logic::action::kDoorText) {
+            const std::uint16_t base = kind == logic::action::kShowText            ? logic::kShowTextBase
+                                       : kind == logic::action::kShowTextWithInput ? logic::kShowTextWithInputBase
+                                                                                   : logic::kDoorTextBase;
+            const auto id = static_cast<std::uint16_t>(base + node->index);
+            auto preview = [&](std::uint16_t i) {
+                auto t = texts_ ? texts_->text(i).value_or("(missing)") : std::string("(no TEXT.RSC)");
+                std::ranges::replace(t, '\n', ' ');
+                if (t.size() > 60) t = t.substr(0, 57) + "...";
+                return std::format("{}: {}", i, t);
+            };
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            if (ImGui::BeginCombo("##text", preview(id).c_str())) {
+                if (texts_) {
+                    for (const auto i : texts_->idsBetween(std::uint16_t(base + 1), std::uint16_t(base + 99))) {
+                        if (ImGui::Selectable(preview(i).c_str(), i == id)) {
+                            logic::setIndex(obj, static_cast<std::uint8_t>(i - base));
+                            changed = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", texts_->text(i)->c_str());
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::TextDisabled("Only the game's own messages for now (new ones need a Bunnyfall change).");
+            if (kind == logic::action::kDoorText) {
+                bool hostile = node->axis > 5;
+                if (ImGui::Checkbox("Using it again makes people hostile", &hostile)) {
+                    logic::setAxis(obj, hostile ? 6 : 0);
+                    changed = true;
+                }
+            }
+        } else if (kind == logic::action::kHurt22 || kind == logic::action::kDrainMagicka ||
+                   kind == logic::action::kSetGlobalVar || (kind >= 0x16 && kind <= logic::action::kHurt25)) {
+            int amount = static_cast<int>(node->axis);
+            const char* label = kind == logic::action::kSetGlobalVar ? "Variable" : kind == logic::action::kDrainMagicka
+                                                                                      ? "Magicka"
+                                                                                      : "Damage x level";
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::InputInt(label, &amount)) {
+                logic::setAxis(obj, static_cast<std::uint32_t>(std::clamp(amount, 0, kind == logic::action::kSetGlobalVar ? 63 : 255)));
+                changed = true;
+            }
+        } else if (kind == logic::action::kCastSpell) {
+            int spell = node->index;
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::InputInt("Spell", &spell)) {
+                logic::setIndex(obj, static_cast<std::uint8_t>(std::clamp(spell, 0, 255)));
+                changed = true;
+            }
+            ImGui::SetItemTooltip("A spell number from SPELLS.STD.");
+        }
+        if (!usesIndex(kind)) {
+            int sound = node->index;
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::InputInt("Sound", &sound)) {
+                logic::setIndex(obj, static_cast<std::uint8_t>(std::clamp(sound, 0, 255)));
+                changed = true;
+            }
+            ImGui::SetItemTooltip("Played each time it is set off. 0: none.");
+        }
+
+        // The next object.
+        if (linkFrom_ == ref) {
+            ImGui::TextColored(kWarningText, "Click the next object in a view (Esc or right-click cancels).");
+        } else {
+            const char* linkLabel = kind == logic::action::kTeleport ? "Pick where it lands" : "Link to...";
+            if (ImGui::SmallButton(linkLabel)) linkFrom_ = ref;
+            ImGui::SetItemTooltip("Then click the object it sets off, in any view. It must be in this block.");
+            if (node->next > 0) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Unlink")) {
+                    logic::setNext(obj, -1);
+                    changed = true;
+                }
+            }
+        }
+        if (!incoming.empty() || node->next > 0) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Take out of chain")) {
+                if (endGesture) edit_->endGesture();
+                takeOutOfChain(ref);
+                return;   // the block changed under `obj`
+            }
+            ImGui::SetItemTooltip("What sets this off will set off its next object instead.");
+        }
+    } else if (!incoming.empty()) {
+        ImGui::TextDisabled("Give it an action to carry the chain on.");
+    }
+    if (changed) commitObject(ref, std::move(obj));
+    if (endGesture) edit_->endGesture();
+}
+
+void Viewer::finishLink(std::optional<scene::Hit> hit) {
+    const auto from = *linkFrom_;
+    linkFrom_.reset();
+    if (!hit) return;
+    const auto to = refOf(hit->kind, hit->index);
+    if (!editing(to)) {
+        status_ = "A link stays inside one block: pick something in " + edit_->name() + ".";
+        return;
+    }
+    if (to.root == from.root && to.object == from.object) return;
+    const auto* src = edit_->object({from.root, from.object});
+    const auto* target = edit_->object({to.root, to.object});
+    if (!src || !target) return;
+    auto obj = *src;
+    logic::setNext(obj, target->position);
+    commitObject(from, std::move(obj));
+    setSelection({from});
+}
+
+void Viewer::takeOutOfChain(const scene::ObjectRef& ref) {
+    const auto* self = edit_->object({ref.root, ref.object});
+    if (!self) return;
+    const auto node = logic::nodeOf(edit_->block(), *self);
+    const std::int32_t next = node ? node->next : -1;
+    const std::int32_t position = self->position;
+    edit_->beginGesture();
+    const auto& block = edit_->block();
+    for (std::size_t r = 0; r < block.roots.size(); ++r) {
+        for (std::size_t o = 0; o < block.roots[r].objects.size(); ++o) {
+            const auto& other = edit_->block().roots[r].objects[o];
+            const auto n = logic::nodeOf(edit_->block(), other);
+            if (!n || n->next != position || other.position == position) continue;
+            auto changed = other;
+            logic::setNext(changed, next);
+            edit_->replace({r, o}, std::move(changed));
+        }
+    }
+    auto changedSelf = *edit_->object({ref.root, ref.object});
+    logic::setNext(changedSelf, -1);
+    edit_->replace({ref.root, ref.object}, std::move(changedSelf));
+    edit_->endGesture();
+    editChanged();
+}
+
+// ---- preview ----
+
+void Viewer::startPreview(const scene::ObjectRef& ref) {
+    const auto& block = scene_.blocks[ref.block].data;
+    Preview p;
+    p.stamp = sceneStamp_;
+    for (const auto& step : logic::chainFrom(block, {ref.root, ref.object})) {
+        if (!step.node) continue;
+        const auto& o = block.roots[step.slot.root].objects[step.slot.object];
+        const bool door = o.model() && logic::isActionDoor(block, *o.model());
+        const auto motion = logic::motionOf(*step.node, door);
+        if (!motion) continue;
+        p.items.push_back({instanceOf({ref.block, step.slot.root, step.slot.object}), *motion});
+        p.length = std::max(p.length, motion->seconds);
+    }
+    if (p.items.empty()) {
+        status_ = "Nothing in this chain moves or turns.";
+        return;
+    }
+    preview_ = std::move(p);
+}
+
+void Viewer::poseForPreview(double seconds) {
+    posedModels_.clear();
+    posedFlats_.clear();
+    if (!preview_) return;
+    if (preview_->stamp != sceneStamp_) {   // the block changed: what was previewed is gone
+        preview_.reset();
+        return;
+    }
+    constexpr double kHold = 0.75;
+    auto& p = *preview_;
+    p.time += seconds;
+    const double length = std::max(p.length, 0.25);
+    const double back = length + kHold;
+    if (p.time > back + length + kHold) {
+        preview_.reset();
+        return;
+    }
+    for (const auto& item : p.items) {
+        if (!item.instance) continue;
+        const double s = item.motion.seconds;
+        double t = 0;
+        if (p.time < back) t = s > 0 ? std::min(1.0, p.time / s) : 1.0;
+        else t = 1.0 - (s > 0 ? std::min(1.0, (p.time - back) / s) : 1.0);
+        const auto& mv = item.motion.move;
+        const catalog::Vec3 offset{mv.x * t, mv.y * t, mv.z * t};
+        if (item.instance->first == scene::Hit::Kind::Model) {
+            auto& inst = scene_.models[item.instance->second];
+            posedModels_.emplace_back(item.instance->second, inst.transform);
+            inst.transform.rotation = inst.transform.rotation * logic::turnAt(item.motion, t);
+            inst.transform.translation = inst.transform.translation + offset;
+        } else if (item.instance->first == scene::Hit::Kind::Flat) {
+            auto& inst = scene_.flats[item.instance->second];
+            posedFlats_.emplace_back(item.instance->second, inst.position);
+            inst.position = inst.position + offset;
+        }
+    }
+}
+
+void Viewer::endPreviewPose() {
+    for (const auto& [i, t] : posedModels_) scene_.models[i].transform = t;
+    for (const auto& [i, p] : posedFlats_) scene_.flats[i].position = p;
+    posedModels_.clear();
+    posedFlats_.clear();
 }
 
 } // namespace de::app

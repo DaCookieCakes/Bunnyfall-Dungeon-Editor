@@ -79,6 +79,13 @@ press **Edit** in the Edit panel). Then:
   The views draw the links as arrows: cyan for a chain, dashed magenta for a teleport, grey where the chain stops,
   a red cross for a link to nothing. The selection's chains are bright. **Show > Logic links** picks all, the
   selection's, or none.
+- **Editing logic** (Properties, on an object of the edited block): pick an **Action** (move, turn, swing open,
+  lock/unlock, teleport, a message or riddle, hurt, drain magicka, cast a spell, set a quest variable, or just pass
+  it on), when it is **Set off** (used, stood on, walked into, hit, ...), and its values: direction, distance and
+  time for a move; axis, angle and time for a turn; the message from a list of the game's own. **Link to...** then
+  click the next object in any view (Esc or right-click cancels); **Unlink**; **Take out of chain** joins what set
+  it off to what it sets off. **Preview** plays the chain's moves, turns and swings in the views, forward and back.
+  Every change is one undo step. A chain fires all at once, as in the game.
 - **G** moves the selection with the mouse (left-click puts it down, right-click or Esc cancels). Arrows nudge it
   (Shift: 64 units), PageUp/PageDown move it up and down. **Del** deletes, **Ctrl+D** duplicates,
   **Ctrl+Z / Ctrl+Y** undo and redo, **Ctrl+S** saves.

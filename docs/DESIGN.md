@@ -485,6 +485,12 @@ Run before every export. Errors block export; warnings don't.
    words; `formats/text_rsc.*` reads TEXT.RSC; `dftool actions` measures classic use (§2.6). In the viewer
    (`viewer_logic.cpp`): a Logic part in Properties (what it does, its text, door lock, links both ways, the whole
    chain, warnings) and link arrows in every view.
+   *Step 2 (2026-11-04): done.* `src/logic/edit.*`: setting an action (a model's record is made on demand at
+   Position + 16), trigger, link and values, with moves and turns in editor terms (directions in editor space;
+   flats can only use the fixed moves) and the motion a preview plays (`motionOf`, `turnAt`, checked against
+   Bunnyfall's `trs`). In the viewer: the editable Logic part, link by clicking, take out of chain, and the preview
+   (forward, a pause, back; posed for the frame only). `--check-edit` makes a lever, links it to a piece by a click,
+   previews, undoes and saves the link in its patch.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).
 

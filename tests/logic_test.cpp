@@ -1,7 +1,10 @@
 #include "formats/text_rsc.h"
 #include "logic/action.h"
+#include "logic/edit.h"
 
 #include <doctest/doctest.h>
+
+#include <cmath>
 
 using namespace de;
 
@@ -121,4 +124,103 @@ TEST_CASE("door actions on things that aren't doors") {
     const auto mixed = logic::describe(*logic::nodeOf(b, b.roots[0].objects[2]), true, nullptr);
     REQUIRE(mixed.warnings.size() == 1);
     CHECK(mixed.warnings[0].find("starting lock") != std::string::npos);
+}
+
+// ---- editing ----
+
+TEST_CASE("giving a model an action, a move and a link") {
+    auto b = block({model(1000, 0, 0, -1), model(2000, 1, 0, -1)});
+    auto& lever = b.roots[0].objects[0];
+    CHECK_FALSE(logic::nodeOf(b, lever));
+    logic::setAction(lever, logic::action::kActivate);
+    logic::setTrigger(lever, logic::trigger::kUse);
+    logic::setNext(lever, 2000);
+    auto n = logic::nodeOf(b, lever);
+    REQUIRE(n);
+    CHECK(lever.model()->hasAction());
+    CHECK(n->trigger == logic::trigger::kUse);
+    CHECK(n->next == 2000);
+
+    logic::setMove(lever, {logic::Direction::PlusX, 96, 30});
+    n = logic::nodeOf(b, lever);
+    const auto mv = logic::moveOf(*n);
+    REQUIRE(mv);
+    CHECK(mv->direction == logic::Direction::PlusX);
+    CHECK(mv->units == 96);
+    CHECK(mv->duration == 30);
+    CHECK(n->next == 2000);   // kept
+    CHECK(logic::describe(*n, false, nullptr).does.find("Moves +X 96 units") == 0);
+
+    logic::setAction(lever, 0);
+    CHECK_FALSE(lever.model()->hasAction());
+    CHECK_FALSE(logic::nodeOf(b, lever));
+}
+
+TEST_CASE("every move direction reads back") {
+    for (int d = 0; d < 6; ++d) {
+        for (bool flat : {false, true}) {
+            formats::RdbObject obj;
+            obj.position = 1000;
+            if (flat) {
+                formats::RdbFlat f;
+                f.textureBitfield = static_cast<std::uint16_t>(210 << 7);
+                obj.resource = f;
+                obj.type = formats::RdbObjectType::Flat;
+            } else {
+                obj = model(1000, 0, 0, -1);
+            }
+            logic::setMove(obj, {static_cast<logic::Direction>(d), 64, 40});
+            const auto b = block({obj});
+            const auto n = logic::nodeOf(b, b.roots[0].objects[0]);
+            REQUIRE(n);
+            const auto mv = logic::moveOf(*n);
+            REQUIRE(mv);
+            CHECK(int(mv->direction) == d);
+            CHECK(mv->units == 64);
+            const auto motion = logic::motionOf(*n, false);
+            REQUIRE(motion);
+            const double sum = motion->move.x + motion->move.y + motion->move.z;
+            CHECK(std::abs(sum) == doctest::Approx(64));
+        }
+    }
+}
+
+TEST_CASE("turns, swings and their preview pose") {
+    auto b = block({model(1000, 0, 0, -1), model(2000, 1, logic::action::kOpenDoor, -1)});
+    auto& wheel = b.roots[0].objects[0];
+    logic::setTurn(wheel, {logic::TurnAxis::Y, -90, 20});
+    auto n = logic::nodeOf(b, wheel);
+    REQUIRE(n);
+    const auto t = logic::turnOf(*n);
+    REQUIRE(t);
+    CHECK(t->axis == logic::TurnAxis::Y);
+    CHECK(t->degrees == doctest::Approx(-90));
+    const auto motion = logic::motionOf(*n, false);
+    REQUIRE(motion);
+    // Half way through, the pose is a 45 degree placed turn (file units 256).
+    const auto half = logic::turnAt(*motion, 0.5);
+    const auto expected = catalog::rdbModelRotation(0, 256, 0);
+    for (int i = 0; i < 9; ++i) CHECK(half.m[std::size_t(i)] == doctest::Approx(expected.m[std::size_t(i)]));
+
+    const auto swing = logic::motionOf(*logic::nodeOf(b, b.roots[0].objects[1]), true);
+    REQUIRE(swing);
+    CHECK(swing->degrees == -90);
+    CHECK(swing->seconds == 1.5);
+}
+
+TEST_CASE("a flat's link of none is 0, and markers can't act") {
+    formats::RdbObject f;
+    f.position = 1000;
+    formats::RdbFlat flat;
+    flat.textureBitfield = static_cast<std::uint16_t>(210 << 7);
+    f.resource = flat;
+    logic::setAction(f, logic::action::kTeleport);
+    logic::setNext(f, 2000);
+    CHECK(f.flat()->nextObjectOffset == 2000);
+    logic::setNext(f, -1);
+    CHECK(f.flat()->nextObjectOffset == 0);
+
+    formats::RdbObject marker = f;
+    std::get<formats::RdbFlat>(marker.resource).textureBitfield = static_cast<std::uint16_t>(199 << 7);
+    CHECK_FALSE(logic::canAct(marker));
 }

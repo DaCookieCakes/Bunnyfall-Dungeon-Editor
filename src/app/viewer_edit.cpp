@@ -386,7 +386,9 @@ bool Viewer::handleEditKey(const SDL_KeyboardEvent& key) {
         return true;
     }
     if (key.key == SDLK_ESCAPE) {
-        if (!moving_.empty() && !grabbing_) {   // a handle drag
+        if (linkFrom_) linkFrom_.reset();
+        else if (preview_) preview_.reset();
+        else if (!moving_.empty() && !grabbing_) {   // a handle drag
             endTransform(false);
             drag_ = {};
         } else if (grabbing_) endGrab(false);
@@ -505,6 +507,8 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     placeAt(cx + viewWidth_ * 0.1, cy);
     stopPlacing();
     if (edit_->block().objectCount() != beforeModels + 2) return fail("placing a model: " + status_);
+    const auto propRef = primary();
+    if (!propRef) return fail("the placed model is not selected");
     const auto propSlot = edit_->modelSlot(prop->id);
     if (!propSlot) return fail("the placed model has no model slot");
     log += std::format("placed model {} (\"{}\") twice, model slot {}\n", prop->id, prop->description, *propSlot);
@@ -634,7 +638,53 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     for (auto f : flags_.models) drawn += (f & render::InstanceFlags::kHidden) ? 0 : 1;
     showAll();
     log += std::format("box selected {}, hid them ({} models still drawn), showed all\n", boxed, drawn);
-    setSelection({*pieceRef});   // left selected, for a screenshot of its texture variants
+    // Logic: the prop becomes a lever that, used, sets off the piece, which slides up 128 units over 2 s.
+    {
+        auto lever = *edit_->object({propRef->root, propRef->object});
+        logic::setAction(lever, logic::action::kActivate);
+        logic::setTrigger(lever, logic::trigger::kUse);
+        commitObject(*propRef, lever);
+        auto door = *edit_->object({pieceRef->root, pieceRef->object});
+        logic::setMove(door, {logic::Direction::Up, 128, 40});
+        commitObject(*pieceRef, door);
+        linkFrom_ = *propRef;
+        finishLink(scene::Hit{scene::Hit::Kind::Model, *scene::modelIndexOf(scene_, *pieceRef), 0, {}});
+        const auto& links = sceneLinks();
+        const auto link = std::ranges::find_if(links, [&](const SceneLink& l) { return l.from == *propRef; });
+        if (link == links.end() || link->to != *pieceRef || link->kind != logic::LinkKind::Chain) {
+            return fail("linking the lever to the piece");
+        }
+        // The preview poses the piece half way up after 1 s, and puts it back after the frame.
+        const auto pieceModel = *scene::modelIndexOf(scene_, *pieceRef);
+        const auto restY = scene_.models[pieceModel].transform.translation.y;
+        startPreview(*propRef);
+        if (!preview_) return fail("no preview: " + status_);
+        poseForPreview(1.0);
+        const auto posedY = scene_.models[pieceModel].transform.translation.y;
+        endPreviewPose();
+        preview_.reset();
+        if (std::abs(posedY - restY - 64) > 0.5) return fail(std::format("the preview put the piece at +{}", posedY - restY));
+        if (scene_.models[pieceModel].transform.translation.y != restY) return fail("the preview pose stayed");
+        takeOutOfChain(*pieceRef);
+        if (logic::nodeOf(edit_->block(), *edit_->object({propRef->root, propRef->object}))->next != -1) {
+            return fail("taking the piece out of the chain left the lever linked");
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (!edit_->undo()) return fail("undoing the logic edits");
+        }
+        editChanged();
+        if (logic::nodeOf(edit_->block(), *edit_->object({propRef->root, propRef->object}))) {
+            return fail("four undos left the lever an action");
+        }
+        for (int i = 0; i < 3; ++i) edit_->redo();   // back to the linked lever, which the save below keeps
+        editChanged();
+        if (std::ranges::none_of(sceneLinks(), [&](const SceneLink& l) { return l.from == *propRef && l.to == *pieceRef; })) {
+            return fail("redo did not bring the link back");
+        }
+        log += "logic: lever (use) -> piece (moves up 128 over 2 s), linked by a click, previewed, taken out, undone\n";
+    }
+    setSelection({*pieceRef});   // left selected, for a screenshot of its texture variants and logic
+    focusInspectorFrames_ = 8;
 
     // Save, read back through the same path the viewer opens dungeons with, and compare.
     saveEdit();
@@ -642,6 +692,9 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     auto reloaded = blockSource()(edit_->name());
     if (!reloaded) return fail("reload failed: " + reloaded.error().message);
     if (reloaded->objectCount() != edit_->block().objectCount()) return fail("the saved patch reloads differently");
+    if (logic::linksOf(*reloaded).size() != logic::linksOf(edit_->block()).size()) {
+        return fail("the saved patch reloads with different links");
+    }
     log += "saved " + patches_->fileFor(edit_->name()).string() + " and reloaded it\n";
     return log;
 }

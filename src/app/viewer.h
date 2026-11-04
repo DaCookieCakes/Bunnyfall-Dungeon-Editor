@@ -9,6 +9,7 @@
 #include "formats/maps.h"
 #include "formats/text_rsc.h"
 #include "logic/action.h"
+#include "logic/edit.h"
 #include "project/prefab.h"
 #include "project/project.h"
 #include "project/world_export.h"
@@ -282,7 +283,20 @@ private:
     [[nodiscard]] std::unordered_set<scene::ObjectRef, RefHash> selectedChains();
     void drawLogicLinks(std::size_t view);
     void drawLogicSection(const scene::ObjectRef& ref);
+    /// The editable part of the Logic section, for an object of the edited block.
+    void drawLogicEditor(const scene::ObjectRef& ref, const std::vector<const SceneLink*>& incoming);
     void selectAndFrame(const scene::ObjectRef& ref);
+    /// Puts a changed object of the edited block back (one undo step, or part of an open gesture).
+    void commitObject(const scene::ObjectRef& ref, formats::RdbObject obj);
+    /// A left click while picking the next object for linkFrom_.
+    void finishLink(std::optional<scene::Hit> hit);
+    /// Takes an object out of its chain: whatever set it off sets off its next object instead.
+    void takeOutOfChain(const scene::ObjectRef& ref);
+    /// Plays what happens when `ref` is set off: its chain's moves, turns and swings, forward and back.
+    void startPreview(const scene::ObjectRef& ref);
+    /// Poses the previewed objects for this frame; undone by endPreviewPose.
+    void poseForPreview(double seconds);
+    void endPreviewPose();
 
     // ---- the project (viewer_project.cpp) ----
     void drawProjectPanel();
@@ -335,7 +349,20 @@ private:
     std::vector<SceneLink> links_;
     enum class LinkMode { Off, Selection, All } linkMode_ = LinkMode::All;
     std::optional<formats::TextResource> texts_;           // TEXT.RSC, for the text actions
-    int focusInspectorFrames_ = 0;                         // bring Properties to the front for a few frames
+    int focusInspectorFrames_ = 0;
+    std::optional<scene::ObjectRef> linkFrom_;              // picking the next object for this one
+    struct Preview {
+        struct Item {
+            std::optional<std::pair<scene::Hit::Kind, std::size_t>> instance;
+            logic::Motion motion;
+        };
+        std::vector<Item> items;
+        double time = 0, length = 0;
+        std::uint64_t stamp = 0;                            // the scene it was made for
+    };
+    std::optional<Preview> preview_;
+    std::vector<std::pair<std::size_t, scene::Transform>> posedModels_;   // real transforms, while posed
+    std::vector<std::pair<std::size_t, catalog::Vec3>> posedFlats_;                         // bring Properties to the front for a few frames
     std::unordered_set<scene::ObjectRef, RefHash> selectedSet_;
     std::unordered_set<scene::ObjectRef, RefHash> hidden_;  // hidden one by one (H)
     std::array<bool, kCategories> shown_{true, true, true, true, true, true, true, true, true, true};

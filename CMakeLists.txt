@@ -74,7 +74,7 @@ add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp src/edi
 target_link_libraries(de_edit PUBLIC de_catalog PRIVATE de_warnings)
 
 # ---- logic: dungeon actions as the game reads them; no GPU, no UI ----
-add_library(de_logic STATIC src/logic/action.cpp)
+add_library(de_logic STATIC src/logic/action.cpp src/logic/edit.cpp)
 target_link_libraries(de_logic PUBLIC de_edit de_catalog PRIVATE de_warnings)
 
 # ---- project: the editor's own file of blocks and dungeons ----

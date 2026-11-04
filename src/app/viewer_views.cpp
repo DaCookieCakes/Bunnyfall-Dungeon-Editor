@@ -196,7 +196,8 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
     const bool ortho = v.kind != ViewKind::Perspective;
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        if (grabbing_) endGrab(true);
+        if (linkFrom_) finishLink(pickAt(mx, my, selectOptions()));
+        else if (grabbing_) endGrab(true);
         else if (placingAnything()) placeAt(mx, my);
         else if (!overHandle && drag_.kind == Drag::Kind::None) {
             // Decided when the button comes up (a click selects) or the pointer moves (a box, or a move).
@@ -209,7 +210,8 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
         }
     }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && drag_.kind == Drag::Kind::None) {
-        if (grabbing_) endGrab(false);
+        if (linkFrom_) linkFrom_.reset();
+        else if (grabbing_) endGrab(false);
         else if (placingAnything()) stopPlacing();
         else if (!ortho) {
             looking_ = true;
@@ -265,6 +267,7 @@ void Viewer::renderViews(float pixelsPerPoint) {
         scene_.flats.push_back(g);
         flags_.flats.push_back(render::InstanceFlags::kSelected);
     }
+    poseForPreview(ImGui::GetIO().DeltaTime);
     for (std::size_t i = 0; i < views_.size(); ++i) {
         auto& v = views_[i];
         if (!v.shown) continue;
@@ -283,6 +286,7 @@ void Viewer::renderViews(float pixelsPerPoint) {
     }
     scene_.models.resize(realModels);
     scene_.flats.resize(realFlats);
+    endPreviewPose();
     flags_.models.resize(realModels);
     flags_.flats.resize(realFlats);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
