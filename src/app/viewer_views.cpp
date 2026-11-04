@@ -209,6 +209,19 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
             drag_.toggle = io.KeyCtrl;
         }
     }
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !linkFrom_ && !grabbing_ && !placingAnything()) {
+        // Like Hammer: a double-click opens the object's properties (it becomes the one Properties shows).
+        if (const auto hit = pickAt(mx, my, selectOptions())) {
+            const auto ref = refOf(hit->kind, hit->index);
+            auto refs = selection_;
+            std::erase(refs, ref);
+            refs.push_back(ref);
+            setSelection(std::move(refs));
+            selectedDistance_ = hit->distance;
+            drag_ = {};
+            openProperties(io.MousePos);
+        }
+    }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && drag_.kind == Drag::Kind::None) {
         if (linkFrom_) linkFrom_.reset();
         else if (grabbing_) endGrab(false);

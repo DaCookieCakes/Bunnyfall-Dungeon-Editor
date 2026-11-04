@@ -381,6 +381,10 @@ bool Viewer::handleEditKey(const SDL_KeyboardEvent& key) {
         maximised_ = maximised_ ? std::nullopt : std::optional(pointerView_);
         return true;
     }
+    if (key.key == SDLK_RETURN && (key.mod & SDL_KMOD_ALT) && !selection_.empty()) {   // Hammer's Alt+Enter
+        openProperties(ImGui::GetIO().MousePos);
+        return true;
+    }
     if (key.key == SDLK_HOME) {
         frameOrthoViews();
         return true;
@@ -685,6 +689,7 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     }
     setSelection({*pieceRef});   // left selected, for a screenshot of its texture variants and logic
     focusInspectorFrames_ = 8;
+    showProperties_ = true;
 
     // Save, read back through the same path the viewer opens dungeons with, and compare.
     saveEdit();
@@ -700,6 +705,69 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
 }
 
 // ---- panels ----
+
+bool Viewer::enemyPicker(int& type) {
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##filter", "filter (orc, mage, ...)", enemyFilter_, sizeof enemyFilter_);
+    std::string want = enemyFilter_;
+    for (auto& c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    bool picked = false;
+    if (ImGui::BeginChild("enemies", {260, 300}, ImGuiChildFlags_Borders)) {
+        bool classes = false;
+        ImGui::SeparatorText("Monsters");
+        for (const auto& e : edit::enemyTypes()) {
+            std::string name(e.name);
+            for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (!want.empty() && name.find(want) == std::string::npos) continue;
+            if (e.id >= 128 && !classes) {
+                ImGui::SeparatorText("Classes");
+                classes = true;
+            }
+            if (ImGui::Selectable(std::string(e.name).c_str(), e.id == type)) {
+                type = e.id;
+                picked = true;
+            }
+            if (e.id == type && ImGui::IsWindowAppearing()) ImGui::SetScrollHereY();
+        }
+    }
+    ImGui::EndChild();
+    return picked;
+}
+
+bool Viewer::sceneryPicker(int& archive, int& record) {
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::InputInt("Archive", &archive)) {
+        archive = std::clamp(archive, 0, 511);
+        record = 0;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("TEXTURE.%03d", archive);
+    const int records = static_cast<int>(textures_.recordCount(archive));
+    if (records == 0) {
+        ImGui::TextDisabled("No pictures in this archive.");
+        return false;
+    }
+    bool picked = false;
+    const float cell = 48;
+    if (ImGui::BeginChild("records", {6 * (cell + 8) + 12, 280}, ImGuiChildFlags_Borders)) {
+        for (int r = 0; r < records; ++r) {
+            ImGui::PushID(r);
+            const bool chosen = r == record;
+            if (chosen) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::ImageButton("rec", textureRef(textures_.get(archive, r)), {cell, cell})) {
+                record = r;
+                picked = true;
+            }
+            if (chosen) ImGui::PopStyleColor();
+            ImGui::SetItemTooltip("%d/%d", archive, r);
+            if ((r + 1) % 6 != 0) ImGui::SameLine();
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    return picked;
+}
 
 void Viewer::drawEditPanel() {
     const auto* viewport = ImGui::GetMainViewport();
@@ -776,7 +844,7 @@ void Viewer::drawEditPanel() {
         snap_ = values[snapIndex];
     }
 
-    // The palette.
+    // The palette. Fixed enemies and scenery ask what kind first.
     ImGui::SeparatorText("Place");
     for (const auto& info : edit::entityKinds()) {
         ImGui::PushID(static_cast<int>(info.kind));
@@ -785,65 +853,35 @@ void Viewer::drawEditPanel() {
         else ImGui::Dummy({24, 24});
         ImGui::SameLine();
         const bool armed = placing_ == info.kind;
-        if (ImGui::Selectable(std::string(info.name).c_str(), armed, 0, {0, 24})) {
+        const bool asks = info.kind == edit::EntityKind::FixedEnemy || info.kind == edit::EntityKind::Scenery;
+        std::string label(info.name);
+        if (info.kind == edit::EntityKind::FixedEnemy) label += std::format(": {}", edit::enemyName(enemyType_));
+        if (info.kind == edit::EntityKind::Scenery) label += std::format(": {}/{}", sceneryArchive_, sceneryRecord_);
+        auto arm = [&] {
+            if (grabbing_) endGrab(false);
+            stopPlacing();
+            placing_ = info.kind;
+            status_ = std::format("Click a floor, wall or ceiling to place {}.", info.name);
+        };
+        if (ImGui::Selectable(label.c_str(), armed, 0, {0, 24})) {
             if (armed) placing_.reset();
-            else {
-                if (grabbing_) endGrab(false);
-                placingModel_.reset();
-                placing_ = info.kind;
-                status_ = std::format("Click a floor, wall or ceiling to place {}.", info.name);
+            else if (asks) ImGui::OpenPopup("kind");
+            else arm();
+        }
+        if (asks) ImGui::SetItemTooltip("Click to choose which, then click in a view to place it.");
+        if (ImGui::BeginPopup("kind")) {
+            const bool picked = info.kind == edit::EntityKind::FixedEnemy ? enemyPicker(enemyType_)
+                                                                          : sceneryPicker(sceneryArchive_, sceneryRecord_);
+            if (picked) {
+                arm();
+                ImGui::CloseCurrentPopup();
             }
+            ImGui::EndPopup();
         }
         ImGui::PopID();
     }
-    ImGui::SeparatorText("New fixed enemy");
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::BeginCombo("##enemy", std::string(edit::enemyName(enemyType_)).c_str())) {
-        for (const auto& e : edit::enemyTypes()) {
-            if (ImGui::Selectable(std::string(e.name).c_str(), e.id == enemyType_)) enemyType_ = e.id;
-        }
-        ImGui::EndCombo();
-    }
-    ImGui::SeparatorText("New scenery");
-    ImGui::SetNextItemWidth(110);
-    if (ImGui::InputInt("Archive", &sceneryArchive_)) {
-        sceneryArchive_ = std::clamp(sceneryArchive_, 0, 511);
-        sceneryRecord_ = 0;
-    }
-    const int records = static_cast<int>(textures_.recordCount(sceneryArchive_));
-    if (records == 0) {
-        ImGui::TextDisabled("TEXTURE.%03d has no pictures.", sceneryArchive_);
-    } else if (ImGui::BeginChild("records", {0, 150}, ImGuiChildFlags_Borders)) {
-        const float cell = 40;
-        const int perRow = std::max(1, static_cast<int>(ImGui::GetContentRegionAvail().x / (cell + 6)));
-        for (int r = 0; r < records; ++r) {
-            ImGui::PushID(r);
-            const bool chosen = r == sceneryRecord_;
-            if (chosen) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-            if (ImGui::ImageButton("rec", textureRef(textures_.get(sceneryArchive_, r)), {cell, cell})) {
-                sceneryRecord_ = r;
-                placingModel_.reset();
-                placing_ = edit::EntityKind::Scenery;
-            }
-            if (chosen) ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%d/%d", sceneryArchive_, r);
-            if ((r + 1) % perRow != 0) ImGui::SameLine();
-            ImGui::PopID();
-        }
-    }
-    if (records > 0) ImGui::EndChild();
-
-    ImGui::SeparatorText("Keys");
-    ImGui::TextDisabled("Click: place / select (Shift adds, Ctrl toggles)\n"
-                        "Drag: box select, or move what is selected\n"
-                        "Handles: arrows / square move, ring turns (R)\n"
-                        "Right-click, Esc: stop   G: move with the mouse\n"
-                        "H / U / I: hide / show all / isolate   Del: delete\n"
-                        "Arrows: nudge (Shift: 64)   PgUp/PgDn: up/down\n"
-                        "Ctrl+D: duplicate   Ctrl+Z / Ctrl+Y: undo / redo\n"
-                        "Ctrl+S: save");
-    ImGui::Separator();
-    ImGui::TextDisabled("Patches: %s", patches_ ? patches_->dir().string().c_str() : "(none set)");
+    ImGui::Spacing();
+    ImGui::TextDisabled("Double-click anything in a view for its properties.\nHelp > Keys and mouse lists the rest.");
     ImGui::End();
 }
 
@@ -921,15 +959,17 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
         ImGui::TextDisabled("%.0f deg", std::fmod(m->yRotation * 360.0 / 2048.0, 360.0));
     } else if (auto* f = std::get_if<formats::RdbFlat>(&obj.resource)) {
         if (kind == edit::EntityKind::FixedEnemy) {
-            const int type = edit::fixedEnemyType(*f);
-            if (ImGui::BeginCombo("Enemy", std::string(edit::enemyName(type)).c_str())) {
-                for (const auto& e : edit::enemyTypes()) {
-                    if (ImGui::Selectable(std::string(e.name).c_str(), e.id == type)) {
-                        edit::setFixedEnemyType(*f, e.id);
-                        changed = true;
-                    }
+            int type = edit::fixedEnemyType(*f);
+            if (ImGui::Button(std::format("{}##enemy", edit::enemyName(type)).c_str(), {180, 0})) ImGui::OpenPopup("enemy");
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Enemy");
+            if (ImGui::BeginPopup("enemy")) {
+                if (enemyPicker(type)) {
+                    edit::setFixedEnemyType(*f, type);
+                    changed = true;
+                    ImGui::CloseCurrentPopup();
                 }
-                ImGui::EndCombo();
+                ImGui::EndPopup();
             }
             int gender = static_cast<int>(edit::enemyGender(*f));
             const char* genders[] = {"Any", "Female", "Male"};
@@ -959,12 +999,22 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
         }
         if (kind == edit::EntityKind::Scenery) {
             int archive = f->textureArchive(), record = f->textureRecord();
-            ImGui::SetNextItemWidth(110);
-            if (ImGui::InputInt("Archive", &archive)) changed = true;
-            ImGui::SetNextItemWidth(110);
-            if (ImGui::InputInt("Record", &record)) changed = true;
-            if (changed) edit::setFlatTexture(*f, std::clamp(archive, 0, 511), std::clamp(record, 0, 127));
-            textureImage(textures_.get(f->textureArchive(), f->textureRecord()), 64);
+            if (ImGui::ImageButton("picture", textureRef(textures_.get(archive, record)), {64, 64})) {
+                pickArchive_ = archive;   // the popup browses from here; the flat changes only when a picture is clicked
+                pickRecord_ = record;
+                ImGui::OpenPopup("scenery");
+            }
+            ImGui::SetItemTooltip("Click to choose another picture");
+            ImGui::SameLine();
+            ImGui::Text("Scenery %d/%d", archive, record);
+            if (ImGui::BeginPopup("scenery")) {
+                if (sceneryPicker(pickArchive_, pickRecord_)) {
+                    edit::setFlatTexture(*f, pickArchive_, pickRecord_);
+                    changed = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
         }
     } else if (auto* l = std::get_if<formats::RdbLight>(&obj.resource)) {
         int radius = l->radius;

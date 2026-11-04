@@ -115,6 +115,7 @@ void Viewer::drawUi() {
                     {"Home", "fit the 2D views to the dungeon"},
                     {"F", "frame the selection in every view"},
                     {"Left-click", "select (Shift adds, Ctrl toggles); with a palette entry armed, place"},
+                    {"Double-click, Alt+Enter", "the object's Properties (General and Triggers tabs)"},
                     {"Left-drag", "a box selects (Shift adds, Ctrl toggles); on a selected object, moves the selection"},
                     {"Ctrl+A", "select everything shown (in the edited block, when editing)"},
                     {"Handles", "arrows move along X/Y/Z, the square freely; the ring turns (R switches)"},
@@ -273,10 +274,9 @@ void Viewer::buildDefaultLayout(unsigned dockspace) {
     const ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.5f, nullptr, &left);
     ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.24f, nullptr, &centre);
     const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.3f, nullptr, &centre);
-    const ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.38f, nullptr, &right);
+    const ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.5f, nullptr, &right);
     ImGui::DockBuilderDockWindow("Browse", left);
     ImGui::DockBuilderDockWindow("Models", leftBottom);
-    ImGui::DockBuilderDockWindow("Properties", right);
     ImGui::DockBuilderDockWindow("Outliner", right);
     ImGui::DockBuilderDockWindow("View", right);
     ImGui::DockBuilderDockWindow("Edit", rightBottom);

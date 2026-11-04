@@ -3,6 +3,7 @@
 #include "core/file.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <charconv>
@@ -317,17 +318,34 @@ void Viewer::drawBrowser() {
     ImGui::End();
 }
 
+void Viewer::openProperties(ImVec2 at) {
+    showProperties_ = true;
+    propertiesAt_ = at;
+}
+
 void Viewer::drawInspector() {
-    ImGui::SetNextWindowPos({10, 540}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize({330, 320}, ImGuiCond_FirstUseEver);
+    constexpr ImVec2 kSize{390, 560};
+    if (propertiesAt_) {
+        // Floating: open beside the double-click, kept on screen. Docked: just come to the front.
+        const auto* window = ImGui::FindWindowByName("Properties");
+        if (!window || !window->DockIsActive) {
+            const auto* vp = ImGui::GetMainViewport();
+            const float x = std::clamp(propertiesAt_->x + 24, vp->WorkPos.x, vp->WorkPos.x + vp->WorkSize.x - kSize.x);
+            const float y = std::clamp(propertiesAt_->y - 40, vp->WorkPos.y, vp->WorkPos.y + vp->WorkSize.y - kSize.y);
+            ImGui::SetNextWindowPos({x, y});
+        }
+        ImGui::SetNextWindowFocus();
+        propertiesAt_.reset();
+    }
     if (focusInspectorFrames_ > 0 && --focusInspectorFrames_ > 0) ImGui::SetNextWindowFocus();
+    ImGui::SetNextWindowSize(kSize, ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Properties", &showProperties_)) {
         ImGui::End();
         return;
     }
     const auto selected = primary();
     if (!selected) {
-        ImGui::TextDisabled("Left-click something in a view (Shift adds, Ctrl toggles, drag for a box).");
+        ImGui::TextDisabled("Double-click something in a view.");
         ImGui::End();
         return;
     }
@@ -335,15 +353,34 @@ void Viewer::drawInspector() {
         ImGui::Text("%zu selected", selection_.size());
         ImGui::SameLine();
         ImGui::TextDisabled("(the last picked is shown)");
-        ImGui::Separator();
-    }
-    if (editing(*selected)) {
-        drawEditInspector(*selectedSlot());
-        drawLogicSection(*selected);
-        ImGui::End();
-        return;
     }
     const auto& ref = *selected;
+    const auto& block = scene_.blocks[ref.block];
+    const auto& obj = objectOf(scene_, ref);
+    const bool hasLogic = logic::nodeOf(block.data, obj).has_value() ||
+                          std::ranges::any_of(sceneLinks(), [&](const SceneLink& l) { return l.to == ref; });
+    ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s", logic::objectLabel(block.data, obj).c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("in %s%s", block.name.c_str(), editing(ref) ? " (editing)" : "");
+    if (ImGui::BeginTabBar("properties")) {
+        if (ImGui::BeginTabItem("General")) {
+            if (editing(ref)) drawEditInspector(*selectedSlot());
+            else drawReadOnlyGeneral(ref);
+            ImGui::EndTabItem();
+        }
+        // Like Hammer's Outputs tab: what it does, what sets it off, and what it sets off.
+        const auto tabFlags = showTriggersTab_ ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        showTriggersTab_ = false;
+        if (ImGui::BeginTabItem(hasLogic ? "Triggers *###triggers" : "Triggers###triggers", nullptr, tabFlags)) {
+            drawLogicSection(ref);
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+    ImGui::End();
+}
+
+void Viewer::drawReadOnlyGeneral(const scene::ObjectRef& ref) {
     const auto& block = scene_.blocks[ref.block];
     const auto& obj = objectOf(scene_, ref);
     ImGui::Text("%s%s", block.name.c_str(), block.isStartingBlock ? "  (starting block)" : "");
@@ -376,13 +413,11 @@ void Viewer::drawInspector() {
     } else if (const auto* l = obj.light()) {
         ImGui::Text("light, radius %u", l->radius);
     }
-    drawLogicSection(ref);
     if (block.bsaIndex != scene::kNoBsaIndex || isProjectBlock(block.name)) {
         ImGui::Separator();
         if (ImGui::Button("Edit this block")) beginEdit(ref.block);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add, move and change things in %s", block.name.c_str());
     }
-    ImGui::End();
 }
 
 std::optional<double> Viewer::floorBelow(catalog::Vec3 point) {

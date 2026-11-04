@@ -178,6 +178,8 @@ bool Viewer::selectAtOffset(std::int32_t offset) {
         if (const auto slot = logic::findPosition(scene_.blocks[b].data, offset)) {
             selectAndFrame({b, slot->root, slot->object});
             focusInspectorFrames_ = 8;   // past the frames that build the docked layout
+            showProperties_ = true;
+            showTriggersTab_ = true;
             return true;
         }
     }
@@ -204,10 +206,11 @@ void Viewer::drawLogicSection(const scene::ObjectRef& ref) {
     }
     const bool skippedRecord = m && m->hasAction() && m->action.flags == 0;
     const bool editable = editing(ref) && logic::canAct(obj);
-    if (!node && !door && incoming.empty() && !skippedRecord && !editable) return;
-
-    ImGui::Separator();
-    if (!ImGui::CollapsingHeader("Logic", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    if (!node && !door && incoming.empty() && !skippedRecord && !editable) {
+        ImGui::TextDisabled(logic::canAct(obj) ? "No action, and nothing sets it off.\nEdit its block to give it one."
+                                               : "Markers and lights can't act (a teleport can land on one).");
+        return;
+    }
     ImGui::PushID("logic");
     auto warn = [](const std::string& text) {
         ImGui::PushStyleColor(ImGuiCol_Text, kWarningText);

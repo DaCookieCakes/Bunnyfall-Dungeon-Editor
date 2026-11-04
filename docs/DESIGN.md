@@ -491,6 +491,9 @@ Run before every export. Errors block export; warnings don't.
    Bunnyfall's `trs`). In the viewer: the editable Logic part, link by clicking, take out of chain, and the preview
    (forward, a pause, back; posed for the frame only). `--check-edit` makes a lever, links it to a piece by a click,
    previews, undoes and saves the link in its patch.
+   *UI pass (2026-11-04):* Properties is a floating window opened by a double-click (or Alt+Enter), like Hammer's
+   Object Properties, with General and Triggers tabs; the Edit panel keeps only the Place list, whose fixed enemy and
+   scenery entries pop up a picker first.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).
 

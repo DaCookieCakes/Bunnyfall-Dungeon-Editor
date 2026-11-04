@@ -233,6 +233,7 @@ private:
     [[nodiscard]] std::optional<scene::Hit> selectionHit() const;
     void drawBrowser();
     void drawInspector();
+    void drawReadOnlyGeneral(const scene::ObjectRef& ref);
     void drawViewPanel();
     /// Editor Y of the floor straight below a point, if there is one.
     [[nodiscard]] std::optional<double> floorBelow(catalog::Vec3 point);
@@ -262,6 +263,11 @@ private:
     bool handleEditKey(const SDL_KeyboardEvent& key);
     void drawEditPanel();
     void drawEditInspector(edit::ObjectSlot slot);
+    /// Pickers shared by the Place list and Properties; true when something was picked (then close the popup).
+    bool enemyPicker(int& type);
+    bool sceneryPicker(int& archive, int& record);
+    /// Opens Properties floating beside `at` (a double-click), or brings it to the front where it is docked.
+    void openProperties(ImVec2 at);
     void drawConfirmations();
 
     // ---- logic (viewer_logic.cpp) ----
@@ -349,7 +355,11 @@ private:
     std::vector<SceneLink> links_;
     enum class LinkMode { Off, Selection, All } linkMode_ = LinkMode::All;
     std::optional<formats::TextResource> texts_;           // TEXT.RSC, for the text actions
-    int focusInspectorFrames_ = 0;
+    bool showTriggersTab_ = false;                          // bring the Triggers tab to the front once
+    std::optional<ImVec2> propertiesAt_;                    // where a double-click asked Properties to open
+    char enemyFilter_[32] = {};
+    int pickArchive_ = 0, pickRecord_ = 0;                  // the scenery picker's place, for a placed flat
+    int focusInspectorFrames_ = 0;                         // bring Properties to the front for a few frames
     std::optional<scene::ObjectRef> linkFrom_;              // picking the next object for this one
     struct Preview {
         struct Item {
@@ -362,7 +372,7 @@ private:
     };
     std::optional<Preview> preview_;
     std::vector<std::pair<std::size_t, scene::Transform>> posedModels_;   // real transforms, while posed
-    std::vector<std::pair<std::size_t, catalog::Vec3>> posedFlats_;                         // bring Properties to the front for a few frames
+    std::vector<std::pair<std::size_t, catalog::Vec3>> posedFlats_;
     std::unordered_set<scene::ObjectRef, RefHash> selectedSet_;
     std::unordered_set<scene::ObjectRef, RefHash> hidden_;  // hidden one by one (H)
     std::array<bool, kCategories> shown_{true, true, true, true, true, true, true, true, true, true};
@@ -446,7 +456,7 @@ private:
     SDL_Window* window_ = nullptr;
     Config* config_ = nullptr;
     bool pathsOpen_ = false, keysOpen_ = false, resetLayout_ = false;
-    bool showBrowse_ = true, showProperties_ = true, showEdit_ = true, showViewPanel_ = true, showProject_ = true;
+    bool showBrowse_ = true, showProperties_ = false, showEdit_ = true, showViewPanel_ = true, showProject_ = true;
     double mouseX_ = 0, mouseY_ = 0;
     bool looking_ = false;     // right mouse held: mouse turns the camera
     double speed_ = 600;       // block units per second
