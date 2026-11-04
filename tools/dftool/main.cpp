@@ -5,6 +5,7 @@
 //   dftool <arena2-dir> dungeon <name|id>  one dungeon's block grid
 //   dftool <arena2-dir> model <id>         one ARCH3D model's size, planes and textures
 //   dftool <arena2-dir> models [N]         the N most used models (default 30), with kind and size
+//   dftool <arena2-dir> actions            how classic blocks use triggers, actions and links
 //   dftool <arena2-dir> ports [NAME]       one block's edge openings, or how openings fall across all N/W blocks
 //   dftool <arena2-dir> boxes <NAME>       every placed model's box in editor space (for plotting)
 //   dftool <arena2-dir> export-block <NAME> <out.json>
@@ -21,6 +22,8 @@
 #include "formats/arena2.h"
 #include "formats/maps.h"
 #include "formats/rdb.h"
+#include "formats/text_rsc.h"
+#include "logic/action.h"
 
 #include <algorithm>
 #include <charconv>
@@ -42,7 +45,7 @@ namespace {
 
 int usage() {
     std::println(stderr, "usage: dftool <arena2-dir> stats | snap | block <NAME> | dungeon <name|locationId> | model <id> |"
-                         " models [N] | ports [NAME] | boxes NAME |"
+                         " models [N] | actions | ports [NAME] | boxes NAME |"
                          " export-block NAME OUT | make-patch BASE EDITED OUT | rebuild-patch PATCH [OUT]");
     return 2;
 }
@@ -337,6 +340,104 @@ int cmdSnap(const Arena2& a) {
     return 0;
 }
 
+template <typename K>
+void printTop(std::string_view title, const std::map<K, std::size_t>& counts, std::size_t limit = 12) {
+    std::vector<std::pair<K, std::size_t>> sorted(counts.begin(), counts.end());
+    std::ranges::sort(sorted, [](const auto& a, const auto& b) { return a.second > b.second; });
+    std::print("{}:", title);
+    for (std::size_t i = 0; i < sorted.size() && i < limit; ++i) std::print("  {}:{}", sorted[i].first, sorted[i].second);
+    std::println("");
+}
+
+int cmdActions(const Arena2& a) {
+    int failures = 0;
+    const auto blocks = loadAllRdb(a, failures);
+    std::optional<TextResource> texts;
+    if (auto path = findArena2File(a.dir, "TEXT.RSC")) {
+        if (auto t = TextResource::load(*path)) texts = std::move(*t);
+    }
+    std::size_t modelNodes = 0, flatNodes = 0, flagZeroWithRecord = 0, undefinedTrigger = 0, undefinedAction = 0;
+    std::size_t doorVerbOffDoor = 0, doorTriggerOffDoor = 0, lockedDoors = 0, magicDoors = 0, doors = 0;
+    std::size_t doorsWithAction = 0, blocksWithLogic = 0;
+    std::map<std::string, std::size_t> combos, byDescription, linkKinds, chainLengths, moveValues, turnValues, texts11;
+    std::map<int, std::size_t> lockLevels;
+    for (const auto& [name, block] : blocks) {
+        bool any = false;
+        std::set<std::int32_t> pointedAt;
+        for (const auto& link : de::logic::linksOf(block)) {
+            pointedAt.insert(link.toPosition);
+            static constexpr const char* kKind[] = {"chain", "teleport", "stops (target has no action)", "missing"};
+            ++linkKinds[kKind[int(link.kind)]];
+        }
+        for (std::size_t r = 0; r < block.roots.size(); ++r) {
+            for (std::size_t o = 0; o < block.roots[r].objects.size(); ++o) {
+                const auto& obj = block.roots[r].objects[o];
+                const auto* m = obj.model();
+                const bool door = m && de::logic::isActionDoor(block, *m);
+                if (door) {
+                    ++doors;
+                    if (const auto lock = de::logic::startingLock(block, obj)) {
+                        ++lockedDoors;
+                        ++lockLevels[lock->value];
+                        if (lock->magic()) ++magicDoors;
+                    }
+                }
+                if (m && m->hasAction() && m->action.flags == 0) ++flagZeroWithRecord;
+                const auto node = de::logic::nodeOf(block, obj);
+                if (!node) continue;
+                any = true;
+                (node->isFlat ? flatNodes : modelNodes) += 1;
+                if (door) ++doorsWithAction;
+                const bool lockBitsOnly = door && (node->rawTrigger & 0xF) == 0;
+                if (!de::logic::isDefinedTrigger(node->rawTrigger) && !lockBitsOnly) ++undefinedTrigger;
+                if (!de::logic::isDefinedAction(node->rawAction)) ++undefinedAction;
+                if ((node->action == de::logic::action::kLockDoor || node->action == de::logic::action::kUnlockDoor) && !door) {
+                    ++doorVerbOffDoor;
+                }
+                if (node->trigger == de::logic::trigger::kDoor && !door) ++doorTriggerOffDoor;
+                ++combos[std::format("{} -> {}", de::logic::triggerName(node->trigger), de::logic::actionName(node->action))];
+                ++byDescription[std::format("{} {}", node->description, de::logic::actionName(node->action))];
+                if (node->action == de::logic::action::kMove) {
+                    ++moveValues[std::format("ax{}/{}u/{}t", node->axis, node->magnitude, node->duration)];
+                }
+                if (node->action == de::logic::action::kTurn) {
+                    ++turnValues[std::format("ax{}/{}/{}t", node->axis, node->magnitude, node->duration)];
+                }
+                if (node->action == de::logic::action::kShowText) ++texts11[std::to_string(node->index)];
+                // Chain length from each head (a node nothing points at).
+                if (!pointedAt.contains(obj.position)) {
+                    const auto chain = de::logic::chainFrom(block, {r, o});
+                    ++chainLengths[std::to_string(chain.size())];
+                }
+            }
+        }
+        if (any) ++blocksWithLogic;
+    }
+    std::println("{} blocks, {} with logic. Nodes: {} models, {} flats", blocks.size(), blocksWithLogic, modelNodes, flatNodes);
+    std::println("models with an action record of kind 0 (the game skips them): {}", flagZeroWithRecord);
+    std::println("undefined triggers {}, undefined actions {}", undefinedTrigger, undefinedAction);
+    std::println("lock/unlock on things that aren't doors: {}; door triggers off doors: {}", doorVerbOffDoor, doorTriggerOffDoor);
+    std::println("action doors {}: {} with an action, {} locked ({} magic)", doors, doorsWithAction, lockedDoors, magicDoors);
+    std::print("lock values:");
+    for (const auto& [v, n] : lockLevels) std::print("  {}:{}", v, n);
+    std::println("");
+    printTop("links", linkKinds);
+    printTop("chain lengths from heads", chainLengths);
+    printTop("trigger -> action", combos, 25);
+    printTop("description + action", byDescription, 25);
+    printTop("moves (axis/magnitude/duration)", moveValues, 15);
+    printTop("turns (axis/magnitude/duration)", turnValues, 15);
+    printTop("show-text indexes", texts11);
+    if (texts) {
+        for (auto [first, last] : {std::pair{8600, 8699}, std::pair{5400, 5499}, std::pair{7700, 7799}}) {
+            std::print("TEXT.RSC {}..{}:", first, last);
+            for (auto id : texts->idsBetween(std::uint16_t(first), std::uint16_t(last))) std::print(" {}", id);
+            std::println("");
+        }
+    }
+    return 0;
+}
+
 int cmdPorts(const Arena2& a, std::string name) {
     auto catalog = de::catalog::Catalog::build(a);
     if (!catalog) return report(catalog);
@@ -489,6 +590,7 @@ int main(int argc, char** argv) {
     const std::string_view cmd = argv[2];
     if (cmd == "stats") return cmdStats(*arena2);
     if (cmd == "snap") return cmdSnap(*arena2);
+    if (cmd == "actions") return cmdActions(*arena2);
     if (cmd == "models") return cmdModels(*arena2, argc > 3 ? std::stoul(argv[3]) : 30);
     if (cmd == "ports") return cmdPorts(*arena2, argc > 3 ? argv[3] : "");
     if (argc < 4) return usage();

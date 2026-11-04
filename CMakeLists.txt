@@ -34,6 +34,7 @@ add_library(de_formats STATIC
   src/formats/maps.cpp
   src/formats/texture.cpp
   src/formats/climate.cpp
+  src/formats/text_rsc.cpp
 )
 target_link_libraries(de_formats PUBLIC de_core PRIVATE de_warnings)
 
@@ -72,7 +73,12 @@ target_link_libraries(de_export PUBLIC de_formats nlohmann_json_header PRIVATE d
 add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp src/edit/transform.cpp)
 target_link_libraries(de_edit PUBLIC de_catalog PRIVATE de_warnings)
 
+# ---- logic: dungeon actions as the game reads them; no GPU, no UI ----
+add_library(de_logic STATIC src/logic/action.cpp)
+target_link_libraries(de_logic PUBLIC de_edit de_catalog PRIVATE de_warnings)
+
 # ---- project: the editor's own file of blocks and dungeons ----
+
 add_library(de_project STATIC src/project/project.cpp src/project/world_export.cpp src/project/prefab.cpp)
 target_link_libraries(de_project PUBLIC de_export de_edit de_catalog PRIVATE de_warnings)
 
@@ -118,19 +124,20 @@ if(DE_BUILD_APP)
     src/app/viewer_select.cpp
     src/app/viewer_palette.cpp
     src/app/viewer_outliner.cpp
+    src/app/viewer_logic.cpp
     src/app/viewer_layout.cpp
     src/app/theme.cpp
     src/app/config.cpp
     src/app/setup.cpp
   )
-  target_link_libraries(dungeon_editor PRIVATE de_render de_catalog de_edit de_export de_project imgui SDL3::SDL3
+  target_link_libraries(dungeon_editor PRIVATE de_render de_catalog de_edit de_logic de_export de_project imgui SDL3::SDL3
                         nlohmann_json_header
                         de_warnings)
 endif()
 
 if(DE_BUILD_TOOLS)
   add_executable(dftool tools/dftool/main.cpp)
-  target_link_libraries(dftool PRIVATE de_catalog de_export de_warnings)
+  target_link_libraries(dftool PRIVATE de_catalog de_export de_logic de_warnings)
 endif()
 
 if(DE_BUILD_TESTS)
@@ -168,11 +175,12 @@ if(DE_BUILD_TESTS)
     tests/edit_test.cpp
     tests/prefab_test.cpp
     tests/transform_test.cpp
+    tests/logic_test.cpp
     tests/grid_test.cpp
     tests/project_test.cpp
     tests/world_export_test.cpp
   )
-  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit de_project doctest::doctest
+  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit de_logic de_project doctest::doctest
                         de_warnings)
 
   # Data tests read ARENA2 from DE_ARENA2; default to the workspace copy beside this project.

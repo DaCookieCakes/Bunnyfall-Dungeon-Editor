@@ -72,6 +72,13 @@ press **Edit** in the Edit panel). Then:
   (a lever and its door) follow the copies.
 - **Outliner** (beside Properties): everything in the edited (or selected) block, by kind, with a filter and a
   show/hide box per object. Click selects, double-click (or **F** in a view) frames it.
+- **Logic** (in Properties): what a selected object does, in words, as the game runs it ("When the player uses
+  it: turns 90° about Y over 0.45 s; back again the next time"), with the text a text action shows, its door lock,
+  what it sets off and what sets it off (click either to go there), the whole chain, and warnings for things that
+  won't work (a lock action on something that isn't a door, a link to nothing, an object nothing ever sets off).
+  The views draw the links as arrows: cyan for a chain, dashed magenta for a teleport, grey where the chain stops,
+  a red cross for a link to nothing. The selection's chains are bright. **Show > Logic links** picks all, the
+  selection's, or none.
 - **G** moves the selection with the mouse (left-click puts it down, right-click or Esc cancels). Arrows nudge it
   (Shift: 64 units), PageUp/PageDown move it up and down. **Del** deletes, **Ctrl+D** duplicates,
   **Ctrl+Z / Ctrl+Y** undo and redo, **Ctrl+S** saves.
@@ -108,7 +115,8 @@ you set (or the floor below you, or the selection's level).
 panels, with `--ui`) and exits; `--frames N` runs the whole app hidden for N frames; `--check-edit DIR` runs the edit
 tools as clicks would (places one of everything ahead, moves, undoes, saves to DIR and reloads); `--check-project
 DIR` makes a block and a dungeon, caps it, opens it and exports to DIR. Both combine with `--screenshot`, and `--grid`
-shows the sizing grid.
+shows the sizing grid. `--select OFFSET` selects (and frames) the object at that offset, for screenshots of its
+Properties.
 
 ## dftool
 
@@ -117,6 +125,8 @@ shows the sizing grid.
 ./build/dftool <ARENA2> block N0000071     # one block's model table and objects
 ./build/dftool <ARENA2> dungeon Daggerfall # a dungeon's block grid (name or locationId)
 ./build/dftool <ARENA2> model 67000        # a model's size and textures
+./build/dftool <ARENA2> snap               # the grid classic architecture sits on
+./build/dftool <ARENA2> actions            # how classic blocks use triggers, actions, links and door locks
 ```
 
 World-data patches (what ships to Bunnyfall, never Daggerfall's own data):

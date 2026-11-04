@@ -145,6 +145,7 @@ void Viewer::drawView(std::size_t index, ImVec2 min, ImVec2 size) {
         list->AddImage(static_cast<ImTextureID>(v.target.texture()), v.min, add(v.min, v.size), {0, 1}, {1, 0});
     }
     if (v.kind != ViewKind::Perspective) drawOrthoGrid(index);
+    drawLogicLinks(index);
     const bool overHandle = drawGizmo(index);
     viewInput(index, overHandle);
     if (pointerView_ == index && !maximised_) {

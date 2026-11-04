@@ -7,6 +7,8 @@
 #include "export/patch_folder.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
+#include "formats/text_rsc.h"
+#include "logic/action.h"
 #include "project/prefab.h"
 #include "project/project.h"
 #include "project/world_export.h"
@@ -95,6 +97,9 @@ public:
     /// one of every kind on the surface ahead, moves one, undoes and redoes, saves to `patchDir`, reloads the patch and
     /// compares. Leaves the edit in place (for a screenshot). Answers a line per step.
     Result<std::string> checkEdit(const std::filesystem::path& patchDir);
+
+    /// Selects the first object at this offset (in any block) and frames it. For scripted screenshots.
+    bool selectAtOffset(std::int32_t offset);
 
 private:
     Viewer(const formats::Arena2& arena2, catalog::Catalog catalog, std::vector<formats::DungeonRecord> dungeons,
@@ -258,6 +263,27 @@ private:
     void drawEditInspector(edit::ObjectSlot slot);
     void drawConfirmations();
 
+    // ---- logic (viewer_logic.cpp) ----
+    struct RefHash {
+        std::size_t operator()(const scene::ObjectRef& r) const {
+            return (r.block * 1000003u) ^ (r.root * 7919u) ^ r.object;
+        }
+    };
+    /// One action link in the scene, with its ends' places (cached until the scene changes).
+    struct SceneLink {
+        scene::ObjectRef from, to;   ///< `to` is meaningless for a missing target
+        logic::LinkKind kind = logic::LinkKind::Chain;
+        catalog::Vec3 a, b;
+        std::optional<std::pair<scene::Hit::Kind, std::size_t>> fromInstance, toInstance;
+    };
+    const std::vector<SceneLink>& sceneLinks();
+    [[nodiscard]] catalog::Vec3 objectCentre(const scene::ObjectRef& ref) const;
+    /// Every object joined to the selection by links, either way.
+    [[nodiscard]] std::unordered_set<scene::ObjectRef, RefHash> selectedChains();
+    void drawLogicLinks(std::size_t view);
+    void drawLogicSection(const scene::ObjectRef& ref);
+    void selectAndFrame(const scene::ObjectRef& ref);
+
     // ---- the project (viewer_project.cpp) ----
     void drawProjectPanel();
     void drawDungeonSettings(project::ProjectDungeon& dungeon);
@@ -303,12 +329,13 @@ private:
     scene::Scene scene_;
     render::Camera camera_;
     render::DrawOptions drawOptions_;
-    struct RefHash {
-        std::size_t operator()(const scene::ObjectRef& r) const {
-            return (r.block * 1000003u) ^ (r.root * 7919u) ^ r.object;
-        }
-    };
     std::vector<scene::ObjectRef> selection_;              // what is selected; the last is the primary
+    std::uint64_t sceneStamp_ = 0;                         // bumped whenever the scene's blocks change
+    std::uint64_t linksStamp_ = ~std::uint64_t{0};
+    std::vector<SceneLink> links_;
+    enum class LinkMode { Off, Selection, All } linkMode_ = LinkMode::All;
+    std::optional<formats::TextResource> texts_;           // TEXT.RSC, for the text actions
+    int focusInspectorFrames_ = 0;                         // bring Properties to the front for a few frames
     std::unordered_set<scene::ObjectRef, RefHash> selectedSet_;
     std::unordered_set<scene::ObjectRef, RefHash> hidden_;  // hidden one by one (H)
     std::array<bool, kCategories> shown_{true, true, true, true, true, true, true, true, true, true};

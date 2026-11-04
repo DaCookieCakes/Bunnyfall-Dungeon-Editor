@@ -153,6 +153,13 @@ void Viewer::drawShowMenu() {
     if (ImGui::MenuItem(isolated_ ? "Show every block" : "Isolate the selection's block", "I")) toggleIsolate();
     if (ImGui::MenuItem("Show everything", "U")) showAll();
     if (!hidden_.empty()) ImGui::TextDisabled("%zu hidden by hand", hidden_.size());
+    ImGui::Separator();
+    ImGui::TextDisabled("Logic links");
+    if (ImGui::RadioButton("All", linkMode_ == LinkMode::All)) linkMode_ = LinkMode::All;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Selection's", linkMode_ == LinkMode::Selection)) linkMode_ = LinkMode::Selection;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("None", linkMode_ == LinkMode::Off)) linkMode_ = LinkMode::Off;
 }
 
 // ---- the selection ----

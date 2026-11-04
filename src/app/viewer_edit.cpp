@@ -90,6 +90,7 @@ void Viewer::discardEdit() {
         if (b.name == name) b.data = *saved;
     }
     scene::rebuildInstances(scene_);
+    ++sceneStamp_;
     clearSelection();
     status_ = "Discarded the unsaved changes to " + name + ".";
 }
@@ -100,6 +101,7 @@ void Viewer::editChanged() {
     }
     issuesStale_ = true;   // doorways may have changed
     scene::rebuildInstances(scene_);
+    ++sceneStamp_;
     // Undo and redo can take objects away: forget what is no longer there.
     auto kept = selection_;
     std::erase_if(kept, [&](const scene::ObjectRef& r) { return editing(r) && !edit_->object({r.root, r.object}); });

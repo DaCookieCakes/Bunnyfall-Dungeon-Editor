@@ -49,6 +49,13 @@ A dungeon's wall, floor and sewer textures come from a table seeded by its locat
 To let a designer choose them: an optional field in the editor's location JSON (the six archives) that
 `dungeonTextureTable` uses when present. DFU ignores the field. Not yet written.
 
+### 4. New messages for dungeon actions (needed later, not started)
+
+"Show text", "show text with input" and door-text actions can only show records already in the player's TEXT.RSC
+(10 messages, 5 riddles, 13 door texts). Authored dungeons will want their own words. Wanted: a per-mod text table
+(for instance `vendor/<mod>/WorldData/texts.json`, id → text, and riddle answers) that `actionSystem.js` checks
+before TEXT.RSC for ids above the classic range. DFU would show nothing for those ids, so the editor will say so.
+
 ### Later (separate work)
 
 - **Custom geometry and textures** (milestone "B"): a loader for a mod's meshes and pictures, mapped onto model ids

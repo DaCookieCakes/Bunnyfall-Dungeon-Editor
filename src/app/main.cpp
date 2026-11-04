@@ -49,6 +49,7 @@ struct Options {
     std::string project;
     bool ui = false;            // draw the panels into the screenshot too
     bool grid = false;          // show the sizing grid
+    int select = -1;            // select (and frame) the object at this offset
 };
 
 bool parse(int argc, char** argv, Options& o) {
@@ -64,6 +65,7 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--top") o.top = true;
         else if (a == "--ui") o.ui = true;
         else if (a == "--grid") o.grid = true;
+        else if (a == "--select" && (v = next())) o.select = std::atoi(v);
         else if (a == "--frames" && (v = next())) o.frames = std::atoi(v);
         else if (a == "--patches" && (v = next())) o.patches = v;
         else if (a == "--check-edit" && (v = next())) o.checkEdit = v;
@@ -151,7 +153,7 @@ int main(int argc, char** argv) {
             std::println(stderr, "usage: dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME] "
                              "[--screenshot OUT.png [--size WxH] [--top] [--camera x,y,z,yawDeg,pitchDeg]] "
                              "[--frames N] [--mod DIR] [--patches DIR] [--project FILE] [--check-edit DIR] "
-                             "[--check-project DIR] [--ui] [--grid]");
+                             "[--check-project DIR] [--ui] [--grid] [--select OFFSET]");
         return 2;
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) return fatal(std::string("SDL: ") + SDL_GetError());
@@ -240,6 +242,7 @@ int main(int argc, char** argv) {
         }
 
         if (o.grid) v.showGrid();
+        if (o.select >= 0 && !v.selectAtOffset(o.select)) std::println(stderr, "nothing at offset {}", o.select);
         if (!o.checkProject.empty()) {
             v.setViewSize(o.width, o.height);
             auto log = v.checkProject(o.checkProject);

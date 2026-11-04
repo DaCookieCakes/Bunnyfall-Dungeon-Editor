@@ -28,34 +28,6 @@ const formats::RdbObject& objectOf(const scene::Scene& scene, const scene::Objec
     return scene.blocks[ref.block].data.roots[ref.root].objects[ref.object];
 }
 
-const char* actionName(int flag) {
-    switch (flag) {
-        case 0x01: return "Translation";
-        case 0x02: return "+X";
-        case 0x03: return "-X";
-        case 0x04: return "+Y";
-        case 0x05: return "-Y";
-        case 0x06: return "+Z";
-        case 0x07: return "-Z";
-        case 0x08: return "Rotation";
-        case 0x09: return "Cast spell";
-        case 0x0b: return "Show text";
-        case 0x0c: return "Show text with input";
-        case 0x0e: return "Teleport";
-        case 0x10: return "Lock door";
-        case 0x11: return "Unlock door";
-        case 0x12: return "Open door";
-        case 0x14: return "Close door";
-        case 0x15: case 0x16: case 0x17: case 0x18: case 0x19: return "Hurt";
-        case 0x1a: return "Poison";
-        case 0x1c: return "Drain magicka";
-        case 0x1d: return "Dialogue";
-        case 0x1e: return "Activate";
-        case 0x1f: return "Set global variable";
-        default: return "(not a defined action)";
-    }
-}
-
 } // namespace
 
 Result<std::unique_ptr<Viewer>> Viewer::create(const formats::Arena2& arena2) {
@@ -72,6 +44,9 @@ Result<std::unique_ptr<Viewer>> Viewer::create(const formats::Arena2& arena2) {
     if (!locations) return std::unexpected(locations.error());
 
     std::unique_ptr<Viewer> v(new Viewer(arena2, std::move(*catalog), std::move(*dungeons), *palette));
+    if (auto textPath = findArena2File(arena2.dir, "TEXT.RSC")) {
+        if (auto texts = formats::TextResource::load(*textPath)) v->texts_ = std::move(*texts);
+    }
     v->world_ = std::make_unique<project::World>(project::World{arena2, v->catalog_, std::move(*locations)});
     auto renderer = render::Renderer::create(v->textures_, v->models_);
     if (!renderer) return std::unexpected(renderer.error());
@@ -106,6 +81,7 @@ std::optional<std::size_t> Viewer::findDungeon(const std::string& key) const {
 void Viewer::setScene(scene::Scene scene) {
     endEdit();
     scene_ = std::move(scene);
+    ++sceneStamp_;
     clearSelection();
     hidden_.clear();
     isolated_.reset();
@@ -344,6 +320,7 @@ void Viewer::drawBrowser() {
 void Viewer::drawInspector() {
     ImGui::SetNextWindowPos({10, 540}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({330, 320}, ImGuiCond_FirstUseEver);
+    if (focusInspectorFrames_ > 0 && --focusInspectorFrames_ > 0) ImGui::SetNextWindowFocus();
     if (!ImGui::Begin("Properties", &showProperties_)) {
         ImGui::End();
         return;
@@ -362,6 +339,7 @@ void Viewer::drawInspector() {
     }
     if (editing(*selected)) {
         drawEditInspector(*selectedSlot());
+        drawLogicSection(*selected);
         ImGui::End();
         return;
     }
@@ -386,16 +364,6 @@ void Viewer::drawInspector() {
         }
         ImGui::Text("rotation (%d, %d, %d)  = y %.1f deg", m->xRotation, m->yRotation, m->zRotation,
                     -catalog::rotationDegrees(m->yRotation));
-        if (m->triggerFlagStartingLock) {
-            ImGui::Text("trigger/lock 0x%x  (starting lock %u)", m->triggerFlagStartingLock,
-                        m->triggerFlagStartingLock >> 4);
-        }
-        if (m->hasAction()) {
-            ImGui::Text("action: %s (flags %d)", actionName(m->action.flags), m->action.flags);
-            ImGui::Text("  axis %d  duration %.2f s  magnitude %d", m->action.axis, m->action.duration / 20.0,
-                        m->action.magnitude);
-            if (m->action.nextObjectOffset >= 0) ImGui::Text("  next object at offset %d", m->action.nextObjectOffset);
-        }
     } else if (const auto* f = obj.flat()) {
         if (f->textureArchive() == kEditorFlatArchive) {
             ImGui::Text("%s  (199/%d)", std::string(catalog::markerName(f->textureRecord())).c_str(),
@@ -405,10 +373,10 @@ void Viewer::drawInspector() {
         }
         ImGui::Text("flags %u  magnitude %u  sound %u", f->flags, f->magnitude, f->soundIndex);
         ImGui::Text("faction/mobile id %u", f->factionOrMobileId());
-        if (f->action) ImGui::Text("action byte %u, next object at offset %d", f->action, f->nextObjectOffset);
     } else if (const auto* l = obj.light()) {
         ImGui::Text("light, radius %u", l->radius);
     }
+    drawLogicSection(ref);
     if (block.bsaIndex != scene::kNoBsaIndex || isProjectBlock(block.name)) {
         ImGui::Separator();
         if (ImGui::Button("Edit this block")) beginEdit(ref.block);

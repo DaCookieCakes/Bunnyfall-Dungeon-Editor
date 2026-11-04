@@ -149,6 +149,25 @@ The trigger is read differently for the two object kinds:
 Classic usage of model actions: Rotation 403, chain-only nodes (flag 0) 326, Translation 295, undefined 99 (treated as
 None) 120, OpenDoor 63, Teleport 59, Activate 56, LockDoor 40, CastSpell 28.
 
+How the game runs them (Bunnyfall's `rdbLayout.js` and `actionSystem.js`, measured 2026-11-04; `dftool actions` and
+`src/logic/` follow it):
+- A model takes part only when its action kind is not 0, a flat when its action byte is not 0. The 326 classic
+  records of kind 0 are skipped, links and all. Editor markers (199) can be linked to (a teleport lands on one) but
+  never act. A link of 0 means none (flats store it so).
+- **A chain fires at once**: an object sets off its next object *before* its own action. The one exception is "show
+  text with input", whose next fires only on a right answer (five riddles have answers).
+- A teleport's next object is both where the player lands and, if it acts, set off too.
+- Moves and turns toggle: forward the first time, back the next. Flats get no duration (they jump). The ±X/Y/Z kinds
+  always take 2.5 s and go axis × 8 units. LID and WHE models, and TRP with axis 13, turn a fixed amount.
+- Door verbs act only on the object itself. "Open door" (and "close door" off a door) turns *anything* into a
+  lockless swinging door (−90° over 1.5 s): the classic secret walls and trapdoors. Lock/unlock on a non-door does
+  nothing.
+- Text actions show TEXT.RSC records: 10 exist for "show text" (8600 + index), 5 riddles (5400 + index), 13 door
+  texts (7700 + index). New messages need a Bunnyfall change (BUNNYFALL_CHANGES.md).
+- The sound index plays on every activation, and doubles as the text record, the spell, and the cap of Hurt21.
+- Classic data: 1,368 acting objects in 112 of 187 blocks; 637 chain links, 81 teleports, 7 into objects that don't
+  act; most chains are one or two objects (the longest is 32). 432 of 2,475 action doors start locked (30 magic).
+
 Action flags: Translation, ±X/Y/Z moves, Rotation, CastSpell, ShowText, ShowTextWithInput, Teleport, Lock / Unlock /
 Open / Close door, Hurt 21–25, Poison, DrainMagicka, Dialogue, Activate, SetGlobalVar. Trigger types: Collision 1/3/9,
 Direct 2/6, Attack 5, MultiTrigger 8, Door 10.
@@ -458,6 +477,14 @@ Run before every export. Errors block export; warnings don't.
    middle of its bottom, placed turned and snapped with its internal action links remapped. Outliner
    (`viewer_outliner.cpp`) and framing the selection (F).
 6. **Logic graph.** Graph editor and compiler to action chains; door and lock settings.
+   *Plan (2026-11-04):* chains can't branch, so instead of a free node canvas: (1) see the logic that is there,
+   (2) edit chains (trigger and action pickers, link by clicking, preview of moves), (3) doors and locks with common
+   set-ups, (4) a reachability check (entrance to exit and every quest marker), replacing the dropped "hide what the
+   player can't reach" view filter.
+   *Step 1 (2026-11-04): done.* `src/logic/action.*` reads nodes and links as the game does and describes them in
+   words; `formats/text_rsc.*` reads TEXT.RSC; `dftool actions` measures classic use (§2.6). In the viewer
+   (`viewer_logic.cpp`): a Logic part in Properties (what it does, its text, door lock, links both ways, the whole
+   chain, warnings) and link arrows in every view.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).
 
