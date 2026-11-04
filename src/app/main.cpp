@@ -1,16 +1,20 @@
-// Bunnyfall Dungeon Editor - currently the viewer (milestone 2).
+// Bunnyfall Dungeon Editor.
 //
 //   dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME]
 //                  [--screenshot OUT.png [--size WxH] [--top] [--camera x,y,z,yawDeg,pitchDeg]]
 //                  [--frames N] [--mod DIR] [--patches DIR] [--project FILE]
 //
-// ARENA2 comes from --arena2, else DE_ARENA2, else ../DFData/ARENA2. With --screenshot the view is drawn once,
+// Paths come from the flags, else DE_ARENA2 (for ARENA2), else the saved settings (Config::file()); with none of
+// those, the setup window asks for them on the first start. Runs without a window (--screenshot, --frames,
+// --check-*) never ask: they fall back to ../DFData/ARENA2 and ../Bunnyfall. With --screenshot the view is drawn once,
 // offscreen, saved and the program exits. --frames N runs the normal loop, panels and all, in a hidden window for N
 // frames and exits: a smoke test of the whole application without showing anything.
-// --mod is the mod folder the project exports to (default: ../Bunnyfall/vendor/bunnyfall-dungeons, when
-// ../Bunnyfall/vendor exists); edited classic blocks are saved in its WorldDataPatches (or --patches). --project is the
-// project file (default: projects/bunnyfall-dungeons.project.json).
+// --mod is the mod folder the project exports to (default: the Bunnyfall checkout's vendor/bunnyfall-dungeons); edited
+// classic blocks are saved in its WorldDataPatches (or --patches). --project is the project file.
 
+#include "app/config.h"
+#include "app/setup.h"
+#include "app/theme.h"
 #include "app/viewer.h"
 #include "core/png.h"
 
@@ -42,7 +46,7 @@ struct Options {
     std::string checkEdit;      // a folder: run the scripted edit check, saving its patch there
     std::string checkProject;   // a folder: run the scripted project check, exporting there
     std::string mod;
-    std::string project = "projects/bunnyfall-dungeons.project.json";
+    std::string project;
     bool ui = false;            // draw the panels into the screenshot too
     bool grid = false;          // show the sizing grid
 };
@@ -73,8 +77,7 @@ bool parse(int argc, char** argv, Options& o) {
         } else return false;
     }
     if (o.arena2.empty()) {
-        const char* env = std::getenv("DE_ARENA2");
-        o.arena2 = env ? env : "../DFData/ARENA2";
+        if (const char* env = std::getenv("DE_ARENA2")) o.arena2 = env;
     }
     return true;
 }
@@ -101,17 +104,27 @@ int screenshot(de::app::Viewer& viewer, const Options& o) {
 
     viewer.setViewSize(o.width, o.height);
     if (o.ui) {
-        // Two frames: the first lays the windows out, the second is the one drawn.
-        for (int i = 0; i < 2; ++i) {
+        // The UI at the screenshot's size. Three frames: the first lays the windows out, the second docks them, the
+        // last is the one drawn. Each view is drawn into its picture, then the UI over the screenshot.
+        ImGui::GetIO().IniFilename = nullptr;   // the default layout, not the designer's saved one
+        for (int i = 0; i < 3; ++i) {
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplSDL3_NewFrame();
+            ImGui::GetIO().DisplaySize = {float(o.width), float(o.height)};
+            ImGui::GetIO().DisplayFramebufferScale = {1, 1};
             ImGui::NewFrame();
             viewer.drawUi();
             ImGui::Render();
+            viewer.renderViews(1);
         }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, o.width, o.height);
+        glClearColor(0.08f, 0.08f, 0.09f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    } else {
+        viewer.drawPerspective(o.width, o.height);
     }
-    viewer.drawScene(o.width, o.height);
-    if (o.ui) ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(o.width) * static_cast<std::size_t>(o.height) * 4);
     glReadPixels(0, 0, o.width, o.height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
     // OpenGL reads bottom row first; PNG wants the top first.
@@ -141,9 +154,6 @@ int main(int argc, char** argv) {
                              "[--check-project DIR] [--ui] [--grid]");
         return 2;
     }
-    auto arena2 = de::formats::Arena2::open(o.arena2);
-    if (!arena2) return fatal(arena2.error().message + " (set --arena2 or DE_ARENA2)");
-
     if (!SDL_Init(SDL_INIT_VIDEO)) return fatal(std::string("SDL: ") + SDL_GetError());
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -164,25 +174,52 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    ImGui::StyleColorsDark();
+    de::app::applyTheme();
     ImGui_ImplSDL3_InitForOpenGL(window, gl);
     ImGui_ImplOpenGL3_Init("#version 330 core");
+
+    // Where things are: the flags, else the saved settings, else ask (first start).
+    auto saved = de::app::Config::load();
+    if (!saved) std::println(stderr, "settings: {}", saved.error().message);
+    de::app::Config config;
+    if (saved && *saved) {
+        config = **saved;
+    } else {
+        if (!de::app::arena2Problem("../DFData/ARENA2")) config.arena2 = std::filesystem::absolute("../DFData/ARENA2").lexically_normal();
+        if (!de::app::bunnyfallProblem("../Bunnyfall")) config.bunnyfall = std::filesystem::absolute("../Bunnyfall").lexically_normal();
+        config.project = std::filesystem::absolute("projects/bunnyfall-dungeons.project.json").lexically_normal();
+    }
+    if (!o.arena2.empty()) {
+        config.arena2 = o.arena2;
+    } else if (!offscreen && (!saved || !*saved || de::app::arena2Problem(config.arena2))) {
+        if (!de::app::runSetup(window, config)) return 0;   // quit from the setup window
+    } else if (offscreen && de::app::arena2Problem(config.arena2)) {
+        config.arena2 = "../DFData/ARENA2";
+    }
+    if (!o.project.empty()) config.project = o.project;
+    if (config.project.empty()) config.project = "projects/bunnyfall-dungeons.project.json";
+
+    auto arena2 = de::formats::Arena2::open(config.arena2);
+    if (!arena2) return fatal(arena2.error().message + " (set --arena2, DE_ARENA2, or the paths in the setup window)");
 
     int status = 0;
     {
         auto viewer = de::app::Viewer::create(*arena2);
         if (!viewer) return fatal(viewer.error().message);
         auto& v = **viewer;
-        std::string mod = o.mod;
-        if (mod.empty() && std::filesystem::is_directory("../Bunnyfall/vendor")) mod = "../Bunnyfall/vendor/bunnyfall-dungeons";
+        v.attach(window, &config);
+        std::filesystem::path mod = o.mod;
+        if (mod.empty() && !de::app::bunnyfallProblem(config.bunnyfall)) mod = config.modFolder();
+        if (mod.empty() && offscreen && !de::app::bunnyfallProblem("../Bunnyfall")) mod = "../Bunnyfall/vendor/bunnyfall-dungeons";
         if (!mod.empty()) v.setModFolder(std::filesystem::absolute(mod).lexically_normal());
         if (!o.patches.empty()) v.setPatchFolder(std::filesystem::absolute(o.patches).lexically_normal());
-        if (auto r = v.setProjectFile(std::filesystem::absolute(o.project).lexically_normal()); !r) {
+        if (auto r = v.setProjectFile(std::filesystem::absolute(config.project).lexically_normal()); !r) {
             return fatal("project: " + r.error().message);
         }
         if (!offscreen) {
-            std::println("mod folder: {}", mod.empty() ? "(none)" : std::filesystem::absolute(mod).lexically_normal().string());
-            std::println("project: {}", std::filesystem::absolute(o.project).lexically_normal().string());
+            std::println("ARENA2: {}", config.arena2.string());
+            std::println("mod folder: {}", mod.empty() ? "(none: set Bunnyfall in File > Paths)" : mod.string());
+            std::println("project: {}", config.project.string());
         }
 
         de::Result<void> opened{};
@@ -229,7 +266,7 @@ int main(int argc, char** argv) {
                     if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
                         v.requestQuit();
                     }
-                    v.handleEvent(event, window);
+                    v.handleEvent(event);
                 }
                 const Uint64 now = SDL_GetTicksNS();
                 v.update(double(now - last) / 1e9);
@@ -241,11 +278,12 @@ int main(int argc, char** argv) {
                 v.drawUi();
                 ImGui::Render();
 
-                int pw = 0, ph = 0, lw = 0, lh = 0;
+                v.renderViews(io.DisplayFramebufferScale.x);
+                int pw = 0, ph = 0;
                 SDL_GetWindowSizeInPixels(window, &pw, &ph);
-                SDL_GetWindowSize(window, &lw, &lh);
-                v.setViewSize(lw, lh);
-                v.drawScene(pw, ph);
+                glViewport(0, 0, pw, ph);
+                glClearColor(0.08f, 0.08f, 0.09f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
                 ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
                 SDL_GL_SwapWindow(window);
             }

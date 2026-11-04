@@ -2,6 +2,8 @@
 
 #include <doctest/doctest.h>
 
+#include <numbers>
+
 using de::catalog::Vec3;
 using de::render::Camera;
 
@@ -61,4 +63,31 @@ TEST_CASE("camera: lookAt turns toward the target") {
     CHECK(f.x == doctest::Approx(std::sqrt(0.5)));
     CHECK(f.y == doctest::Approx(std::sqrt(0.5)));
     CHECK(f.z == doctest::Approx(0).epsilon(1e-9));
+}
+
+TEST_CASE("orthographic camera: rays are parallel and land where the projection draws") {
+    Camera c;
+    c.orthographic = true;
+    c.orthoHalfHeight = 500;
+    c.nearPlane = 1;
+    c.farPlane = 60000;
+    c.pitch = -std::numbers::pi / 2;   // straight down: the top view
+    c.position = {1000, 20000, 2000};
+    const double w = 800, h = 600;
+    const auto a = c.rayThrough(0, 0, w, h), b = c.rayThrough(w, h, w, h);
+    CHECK(a.direction.y == doctest::Approx(-1));
+    CHECK(b.direction.y == doctest::Approx(-1));
+    // The top-left corner is west and north of the centre (north is up in the top view).
+    CHECK(a.origin.x < 1000);
+    CHECK(a.origin.z > 2000);
+    CHECK(b.origin.x - a.origin.x == doctest::Approx(2 * 500 * w / h));
+    for (const auto& [px, py] : {std::pair{400.0, 300.0}, std::pair{10.0, 590.0}}) {
+        const auto ray = c.rayThrough(px, py, w, h);
+        const Vec3 p{ray.origin.x, 0, ray.origin.z};   // straight below, on the floor
+        const auto ndc = project(c, p, w / h);
+        CHECK((ndc[0] + 1) / 2 * w == doctest::Approx(px).epsilon(1e-6));
+        CHECK((1 - ndc[1]) / 2 * h == doctest::Approx(py).epsilon(1e-6));
+        CHECK(ndc[2] > -1);
+        CHECK(ndc[2] < 1);
+    }
 }

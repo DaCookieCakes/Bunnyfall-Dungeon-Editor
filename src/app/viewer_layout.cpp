@@ -1,0 +1,275 @@
+// The frame around the views: menu bar, toolbar, status bar, the dock space and its default layout, and the small
+// windows (paths, keys).
+
+#include "app/setup.h"
+#include "app/viewer.h"
+
+#include <imgui.h>
+#include <imgui_internal.h>
+
+#include <algorithm>
+
+namespace de::app {
+
+namespace {
+
+constexpr const char* kDockName = "editor-dock";
+
+/// A toolbar toggle: highlighted while on.
+bool toggle(const char* label, bool& value, const char* tip) {
+    if (value) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
+    const bool clicked = ImGui::Button(label);
+    if (value) ImGui::PopStyleColor();
+    if (clicked) value = !value;
+    ImGui::SetItemTooltip("%s", tip);
+    return clicked;
+}
+
+void separator() {
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+}
+
+} // namespace
+
+void Viewer::drawUi() {
+    drawMenuBar();
+    drawToolbar();
+
+    // Status bar along the bottom.
+    auto* viewport = ImGui::GetMainViewport();
+    const ImGuiWindowFlags barFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar;
+    if (ImGui::BeginViewportSideBar("##status", viewport, ImGuiDir_Down, ImGui::GetFrameHeight(), barFlags)) {
+        if (ImGui::BeginMenuBar()) {
+            const auto& v = views_[pointerView_];
+            if (v.kind != ViewKind::Perspective && v.size.x > 0) {
+                const auto ray = rayAt(mouseX_, mouseY_);
+                const auto f = cameraOf(pointerView_).forward();
+                // The pointer on the plane through the view's centre.
+                const double t = (v.centre.x - ray.origin.x) * f.x + (v.centre.y - ray.origin.y) * f.y +
+                                 (v.centre.z - ray.origin.z) * f.z;
+                ImGui::Text("%s  %.0f, %.0f, %.0f", v.name, ray.origin.x + f.x * t, ray.origin.y + f.y * t,
+                            ray.origin.z + f.z * t);
+            } else {
+                const auto& p = camera_.position;
+                ImGui::Text("3D  camera %.0f, %.0f, %.0f   speed %.0f", p.x, p.y, p.z, speed_);
+            }
+            separator();
+            if (!selection_.empty()) {
+                ImGui::Text("%zu selected", selection_.size());
+                separator();
+            }
+            if (isolated_) {
+                ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "isolated: %s", scene_.blocks[*isolated_].name.c_str());
+                separator();
+            }
+            if (edit_) ImGui::Text("editing %s%s", edit_->name().c_str(), edit_->dirty() ? " *" : "");
+            else ImGui::TextDisabled("viewing");
+            if (placing_) {
+                separator();
+                ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "placing: click a surface, right-click stops");
+            } else if (grabbing_) {
+                separator();
+                ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "moving: click to put down, right-click cancels");
+            }
+            if (projectDirty_) {
+                separator();
+                ImGui::TextDisabled("project not saved");
+            }
+            ImGui::EndMenuBar();
+        }
+    }
+    ImGui::End();
+
+    const ImGuiID dock = ImHashStr(kDockName);
+    if (resetLayout_ || !ImGui::DockBuilderGetNode(dock)) {
+        buildDefaultLayout(dock);
+        resetLayout_ = false;
+    }
+    ImGui::DockSpaceOverViewport(dock, viewport, ImGuiDockNodeFlags_PassthruCentralNode);
+
+    drawViewsWindow();
+    if (showBrowse_) drawBrowser();
+    if (showProperties_) drawInspector();
+    if (showViewPanel_) drawViewPanel();
+    if (showEdit_) drawEditPanel();
+    if (showProject_) drawProjectPanel();
+    drawConfirmations();
+    if (config_) drawPathsWindow(window_, *config_, &pathsOpen_);
+
+    if (keysOpen_) {
+        ImGui::SetNextWindowSize({520, 0}, ImGuiCond_Appearing);
+        if (ImGui::Begin("Keys and mouse", &keysOpen_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking)) {
+            if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+                ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 170);
+                const std::pair<const char*, const char*> rows[] = {
+                    {"Right-drag (3D)", "look around; WASD moves, Q/E down/up, Shift faster"},
+                    {"Wheel (3D)", "flying speed"},
+                    {"Right/middle-drag (2D)", "pan"},
+                    {"Middle-drag (3D)", "slide the camera"},
+                    {"Wheel (2D)", "zoom about the pointer"},
+                    {"Shift+Z", "maximise the view under the pointer / back to four"},
+                    {"Home", "fit the 2D views to the dungeon"},
+                    {"Left-click", "select (Shift adds, Ctrl toggles); with a palette entry armed, place"},
+                    {"Left-drag", "a box selects (Shift adds, Ctrl toggles); on a selected object, moves the selection"},
+                    {"Ctrl+A", "select everything shown (in the edited block, when editing)"},
+                    {"Handles", "arrows move along X/Y/Z, the square freely; the ring turns (R switches)"},
+                    {"G", "move the selection with the pointer (2D views keep its height or depth)"},
+                    {"H / U / I", "hide the selection / show everything / isolate the selection's block"},
+                    {"Arrows, PgUp/PgDn", "nudge (Shift: a big step)"},
+                    {"Ctrl+D / Delete", "duplicate / delete"},
+                    {"Ctrl+Z, Ctrl+Y", "undo, redo"},
+                    {"Ctrl+S", "save the edited block"},
+                    {"Esc", "cancel a move, stop placing, deselect"},
+                };
+                for (const auto& [k, what] : rows) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(k);
+                    ImGui::TableNextColumn();
+                    ImGui::TextWrapped("%s", what);
+                }
+                ImGui::EndTable();
+            }
+        }
+        ImGui::End();
+    }
+}
+
+void Viewer::drawMenuBar() {
+    if (!ImGui::BeginMainMenuBar()) return;
+    if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Save edited block", "Ctrl+S", false, edit_.has_value())) saveEdit();
+        if (ImGui::MenuItem("Save project", nullptr, false, projectDirty_)) saveProject();
+        if (ImGui::MenuItem("Export to Bunnyfall", nullptr, false, modDir_.has_value())) exportProject();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Paths...")) pathsOpen_ = true;
+        ImGui::Separator();
+        if (ImGui::MenuItem("Quit")) requestQuit();
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Edit")) {
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, edit_.has_value()) && edit_->undo()) editChanged();
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, edit_.has_value()) && edit_->redo()) editChanged();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, edit_ && !selection_.empty())) duplicateSelected();
+        if (ImGui::MenuItem("Delete", "Del", false, edit_ && !selection_.empty())) deleteSelected();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Stop editing", nullptr, false, edit_.has_value())) endEdit();
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("View")) {
+        ImGui::MenuItem("Browse", nullptr, &showBrowse_);
+        ImGui::MenuItem("Properties", nullptr, &showProperties_);
+        ImGui::MenuItem("Edit", nullptr, &showEdit_);
+        ImGui::MenuItem("View options", nullptr, &showViewPanel_);
+        ImGui::MenuItem("Project", nullptr, &showProject_);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Four views", nullptr, !maximised_)) maximised_.reset();
+        for (std::size_t i = 0; i < views_.size(); ++i) {
+            const std::string label = std::string("Only ") + views_[i].name;
+            if (ImGui::MenuItem(label.c_str(), nullptr, maximised_ == i)) maximised_ = i;
+        }
+        if (ImGui::MenuItem("Fit 2D views", "Home")) frameOrthoViews();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reset layout")) resetLayout_ = true;
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Help")) {
+        if (ImGui::MenuItem("Keys and mouse")) keysOpen_ = true;
+        ImGui::EndMenu();
+    }
+    ImGui::EndMainMenuBar();
+}
+
+void Viewer::drawToolbar() {
+    auto* viewport = ImGui::GetMainViewport();
+    const float height = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2;
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::BeginViewportSideBar("##toolbar", viewport, ImGuiDir_Up, height, flags)) {
+        bool selecting = !placing_;
+        if (toggle("Select", selecting, "Click picks; Shift adds, Ctrl toggles, drag for a box (Esc)") && selecting) {
+            placing_.reset();
+        }
+        ImGui::SameLine();
+        bool moveMode = gizmoMode_ == GizmoMode::Move, turnMode = !moveMode;
+        if (toggle("Move", moveMode, "Move handles: drag an arrow along its axis, the square freely (R)")) {
+            gizmoMode_ = GizmoMode::Move;
+        }
+        ImGui::SameLine();
+        if (toggle("Turn", turnMode, "Turn handle in the 3D and Top views: drag the ring (R)")) gizmoMode_ = GizmoMode::Turn;
+        ImGui::SameLine();
+        {
+            const int turns[] = {1, 64, 128, 256, 512};
+            const char* labels[] = {"free", "11.25", "22.5", "45", "90"};
+            int index = 0;
+            for (int i = 0; i < 5; ++i) {
+                if (turns[i] == turnSnap_) index = i;
+            }
+            ImGui::SetNextItemWidth(70);
+            if (ImGui::Combo("##turnsnap", &index, labels, 5)) turnSnap_ = turns[index];
+            ImGui::SetItemTooltip("Turn snap, degrees");
+        }
+        separator();
+        toggle("Grid", drawOptions_.grid, "The sizing grid in the 3D view");
+        ImGui::SameLine();
+        toggle("Wire", drawOptions_.wireframe, "Wireframe in the 3D view");
+        ImGui::SameLine();
+        const bool filtered = std::ranges::find(shown_, false) != shown_.end() || !hidden_.empty() || isolated_;
+        if (filtered) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
+        if (ImGui::Button(filtered ? "Show (filtered)" : "Show")) ImGui::OpenPopup("show");
+        if (filtered) ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Show or hide kinds of things; H hides the selection, I isolates its block, U shows all");
+        if (ImGui::BeginPopup("show")) {
+            drawShowMenu();
+            ImGui::EndPopup();
+        }
+        separator();
+        bool four = !maximised_;
+        if (toggle("4 views", four, "Four views, or the one under the pointer (Shift+Z)")) {
+            maximised_ = four ? std::nullopt : std::optional(pointerView_);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Fit")) frameOrthoViews();
+        ImGui::SetItemTooltip("Fit the 2D views to the dungeon (Home)");
+        ImGui::SameLine();
+        if (ImGui::Button("Start")) cameraToStart();
+        ImGui::SetItemTooltip("3D camera to where a new game starts");
+        separator();
+        ImGui::BeginDisabled(!edit_ || !edit_->dirty());
+        if (ImGui::Button("Save block")) saveEdit();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!projectDirty_);
+        if (ImGui::Button("Save project")) saveProject();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!modDir_);
+        if (ImGui::Button("Export")) exportProject();
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Write the project's dungeons into Bunnyfall's mod folder");
+    }
+    ImGui::End();
+}
+
+void Viewer::buildDefaultLayout(unsigned dockspace) {
+    auto* viewport = ImGui::GetMainViewport();
+    ImGui::DockBuilderRemoveNode(dockspace);
+    ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dockspace, viewport->WorkSize);
+    ImGuiID centre = dockspace;
+    const ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.18f, nullptr, &centre);
+    ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.24f, nullptr, &centre);
+    const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.3f, nullptr, &centre);
+    const ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.55f, nullptr, &right);
+    ImGui::DockBuilderDockWindow("Browse", left);
+    ImGui::DockBuilderDockWindow("Properties", right);
+    ImGui::DockBuilderDockWindow("View", right);
+    ImGui::DockBuilderDockWindow("Edit", rightBottom);
+    ImGui::DockBuilderDockWindow("Project", bottom);
+    ImGui::DockBuilderDockWindow("Viewports", centre);
+    ImGui::DockBuilderFinish(dockspace);
+}
+
+} // namespace de::app

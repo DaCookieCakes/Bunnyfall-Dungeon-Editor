@@ -226,7 +226,7 @@ void Viewer::drawProjectPanel() {
     const auto* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos({350, viewport->Size.y - 470}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({700, 460}, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Project")) {
+    if (!ImGui::Begin("Project", &showProject_)) {
         ImGui::End();
         return;
     }

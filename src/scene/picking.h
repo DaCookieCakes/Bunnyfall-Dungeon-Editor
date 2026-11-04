@@ -31,6 +31,7 @@ struct PickOptions {
     bool models = true;
     std::optional<ObjectRef> ignore;   ///< One object the ray passes through (one being moved).
     double lightSize = 0;              ///< > 0: lights are picked as spheres of this diameter.
+    std::function<bool(Hit::Kind, std::size_t)> skip;   ///< Instances the ray passes through (hidden ones).
 };
 
 /// The nearest model triangle, flat or light the ray meets. Triangles count from both sides.

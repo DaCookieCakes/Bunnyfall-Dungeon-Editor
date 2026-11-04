@@ -38,6 +38,8 @@ struct Camera {
     double pitch = 0;   ///< Radians; positive looks up.
     double fovY = 70.0 * 3.14159265358979 / 180.0;
     double nearPlane = 2.0, farPlane = 40000.0;   // block units
+    bool orthographic = false;
+    double orthoHalfHeight = 1000;   ///< Orthographic: block units from the view's centre to its top edge.
 
     [[nodiscard]] catalog::Vec3 forward() const {
         return {std::sin(yaw) * std::cos(pitch), std::sin(pitch), std::cos(yaw) * std::cos(pitch)};
@@ -56,6 +58,16 @@ struct Camera {
     }
 
     [[nodiscard]] Mat4 projection(double aspect) const {
+        if (orthographic) {
+            const double h = orthoHalfHeight, w = orthoHalfHeight * aspect, n = nearPlane, fa = farPlane;
+            Mat4 o{};
+            o[0] = float(1 / w);
+            o[5] = float(1 / h);
+            o[10] = float(2 / (fa - n));   // left-handed: +Z (forward) goes to +1
+            o[14] = float(-(fa + n) / (fa - n));
+            o[15] = 1;
+            return o;
+        }
         const double t = 1.0 / std::tan(fovY / 2), n = nearPlane, fa = farPlane;
         Mat4 p{};
         p[0] = float(t / aspect);
@@ -68,6 +80,12 @@ struct Camera {
 
     /// The ray through a pixel (0,0 top-left) of a width x height viewport.
     [[nodiscard]] scene::Ray rayThrough(double px, double py, double width, double height) const {
+        if (orthographic) {
+            const double h = orthoHalfHeight, w = orthoHalfHeight * width / height;
+            const double x = (2 * px / width - 1) * w, y = (1 - 2 * py / height) * h;
+            const auto f = forward(), r = right(), u = up();
+            return {{position.x + r.x * x + u.x * y, position.y + r.y * x + u.y * y, position.z + r.z * x + u.z * y}, f};
+        }
         const double t = std::tan(fovY / 2), aspect = width / height;
         const double x = (2 * px / width - 1) * t * aspect;
         const double y = (1 - 2 * py / height) * t;

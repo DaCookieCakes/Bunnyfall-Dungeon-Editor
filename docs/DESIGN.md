@@ -439,6 +439,16 @@ Run before every export. Errors block export; warnings don't.
    architecture pieces, a model palette, prefabs (benches and other set pieces, §7.1), rotation gizmos, validation,
    and editing blocks other than classic ones (new blocks come with milestone 4). The controls need a proper pass:
    the first version is keyboard-heavy and placement-only.
+   *Step 1 (2026-11-03): done.* First-launch setup window and saved paths (`src/app/config.*`, `setup.*`); a
+   Hammer-style dark layout (`viewer_layout.cpp`, `theme.cpp`): menu bar, toolbar, status bar, dock space with a
+   default layout; four views (`viewer_views.cpp`), 3D plus orthographic Top/Front/Side drawn wireframe into their own
+   render targets, each maximisable (Shift+Z), 2D pan, zoom about the pointer and a grid.
+   *Step 2 (2026-11-03): done.* Multi-select (Shift/Ctrl clicks, box drags, select all), group move/turn/nudge/
+   duplicate/delete as single undo steps (`src/edit/transform.*`: snapshot-based, turns about the group's middle),
+   move arrows, free-move square and a turning ring with snap in every view (`viewer_select.cpp`), dragging a selected
+   object moves the selection, hiding by kind / by hand / isolating a block (hidden things are neither drawn nor
+   picked). Not yet: hiding what the player cannot reach (needs a walk of the doorways). Next: the piece kit (model
+   palette with thumbnails, texture twins, prefabs, outliner).
 6. **Logic graph.** Graph editor and compiler to action chains; door and lock settings.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).

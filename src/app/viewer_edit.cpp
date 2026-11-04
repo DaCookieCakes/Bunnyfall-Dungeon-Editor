@@ -90,7 +90,7 @@ void Viewer::discardEdit() {
         if (b.name == name) b.data = *saved;
     }
     scene::rebuildInstances(scene_);
-    selected_.reset();
+    clearSelection();
     status_ = "Discarded the unsaved changes to " + name + ".";
 }
 
@@ -100,7 +100,10 @@ void Viewer::editChanged() {
     }
     issuesStale_ = true;   // doorways may have changed
     scene::rebuildInstances(scene_);
-    if (selected_ && editing(*selected_) && !edit_->object(*selectedSlot())) selected_.reset();
+    // Undo and redo can take objects away: forget what is no longer there.
+    auto kept = selection_;
+    std::erase_if(kept, [&](const scene::ObjectRef& r) { return editing(r) && !edit_->object({r.root, r.object}); });
+    if (kept.size() != selection_.size()) setSelection(std::move(kept));
 }
 
 void Viewer::saveEdit() {
@@ -138,18 +141,22 @@ bool Viewer::editing(const scene::ObjectRef& ref) const {
 }
 
 std::optional<edit::ObjectSlot> Viewer::selectedSlot() const {
-    if (!selected_ || !editing(*selected_)) return std::nullopt;
-    return edit::ObjectSlot{selected_->root, selected_->object};
+    const auto p = primary();
+    if (!p || !editing(*p)) return std::nullopt;
+    return edit::ObjectSlot{p->root, p->object};
 }
 
 // ---- where things go ----
 
 std::optional<Viewer::SurfacePoint> Viewer::surfaceAt(double x, double y) {
-    auto options = scene::PickOptions{.flats = false, .markers = false, .models = true, .ignore = std::nullopt, .lightSize = 0};
-    if (grabbing_) options.ignore = selected_;   // a model being moved does not stand on itself
+    auto options = scene::PickOptions{.flats = false, .markers = false, .models = true, .ignore = std::nullopt, .lightSize = 0, .skip = {}};
+    // Hidden things are not there to stand on, nor is what is being moved.
+    options.skip = [this](scene::Hit::Kind kind, std::size_t i) {
+        return isHidden(kind, i) || (grabbing_ && isSelected(refOf(kind, i)));
+    };
     const auto hit = pickAt(x, y, options);
     if (!hit || hit->kind != scene::Hit::Kind::Model) return std::nullopt;
-    const auto ray = camera_.rayThrough(x, y, viewWidth_, viewHeight_);
+    const auto ray = rayAt(x, y);
     const catalog::Vec3 point{ray.origin.x + ray.direction.x * hit->distance, ray.origin.y + ray.direction.y * hit->distance,
                               ray.origin.z + ray.direction.z * hit->distance};
     return SurfacePoint{point, hit->normal, scene_.models[hit->index].ref.block};
@@ -189,7 +196,7 @@ void Viewer::placeAt(double x, double y) {
     obj.z = file[2];
     const auto slot = edit_->add(std::move(obj));
     editChanged();
-    selected_ = scene::ObjectRef{s->sceneBlock, slot.root, slot.object};
+    setSelection({scene::ObjectRef{s->sceneBlock, slot.root, slot.object}});
     status_ = std::format("Placed {} in {}. Click again to place another; right-click or Esc to stop.",
                           edit::entityInfo(*placing_).name, edit_->name());
 }
@@ -197,82 +204,145 @@ void Viewer::placeAt(double x, double y) {
 // ---- moving ----
 
 void Viewer::startGrab() {
-    if (!selectedSlot()) return;
+    if (!edit_ || selectedSlots().empty() || drag_.kind != Drag::Kind::None) return;
     placing_.reset();
-    grabBlock_ = selected_->block;
-    edit_->beginGesture();
+    beginTransform();
+    grabBlock_ = movingBlock_;
     grabbing_ = true;
     status_ = "Moving: move the mouse over the dungeon, left-click to put it down, right-click or Esc to cancel.";
     grabTo(mouseX_, mouseY_);
 }
 
 void Viewer::grabTo(double x, double y) {
-    const auto slot = selectedSlot();
-    if (!grabbing_ || !slot) return;
-    const auto s = surfaceAt(x, y);
-    if (!s) return;
-    auto obj = *edit_->object(*slot);
-    const auto [w, h] = entitySize(obj);
-    const auto centre = obj.model() ? s->point : edit::restingCentre(s->point, s->normal, w, h);
+    if (!grabbing_ || moving_.empty()) return;
+    // The first of the snapshot (the primary, when it is in this block) follows the pointer; the rest keep their
+    // places around it.
+    const auto& obj = moving_.front().start;
+    catalog::Vec3 centre;
+    if (views_[pointerView_].kind != ViewKind::Perspective) {
+        // An orthographic view moves the object in its own plane, as in Hammer: the top view keeps its height, the
+        // front and side views their depth.
+        const auto& origin = scene_.blocks[grabBlock_].origin;
+        const auto here = catalog::fromFilePosition(obj.x, obj.y, obj.z) + origin;
+        const auto ray = rayAt(x, y);
+        const auto f = ray.direction;
+        const double along = (here.x - ray.origin.x) * f.x + (here.y - ray.origin.y) * f.y + (here.z - ray.origin.z) * f.z;
+        centre = {ray.origin.x + f.x * along, ray.origin.y + f.y * along, ray.origin.z + f.z * along};
+    } else {
+        const auto s = surfaceAt(x, y);
+        if (!s) return;
+        const auto [w, h] = entitySize(obj);
+        centre = obj.model() ? s->point : edit::restingCentre(s->point, s->normal, w, h);
+    }
     // Measured from the block it was picked up in, wherever the pointer is.
     const auto file = toFile(centre, grabBlock_);
-    if (obj.x == file[0] && obj.y == file[1] && obj.z == file[2]) return;
-    obj.x = file[0];
-    obj.y = file[1];
-    obj.z = file[2];
-    edit_->replace(*slot, std::move(obj));
-    editChanged();
+    const std::array<std::int32_t, 3> offset{file[0] - obj.x, file[1] - obj.y, file[2] - obj.z};
+    const auto* now = edit_->object(moving_.front().slot);
+    if (now && now->x == file[0] && now->y == file[1] && now->z == file[2]) return;
+    applyTransform(offset, 0);
 }
 
 void Viewer::endGrab(bool keep) {
     if (!grabbing_) return;
     grabbing_ = false;
-    if (keep) edit_->endGesture();
-    else edit_->cancelGesture();
-    editChanged();
+    endTransform(keep);
     status_ = keep ? "Moved." : "Move cancelled.";
 }
 
 void Viewer::nudge(int dx, int dy, int dz) {
-    const auto slot = selectedSlot();
-    if (!slot) return;
-    auto obj = *edit_->object(*slot);
-    obj.x += dx;
-    obj.y += dy;
-    obj.z += dz;
-    edit_->replace(*slot, std::move(obj));
-    editChanged();
+    if (!edit_ || selectedSlots().empty()) return;
+    beginTransform();
+    applyTransform({dx, dy, dz}, 0);
+    endTransform(true);
+}
+
+void Viewer::turnSelected(std::int32_t turn) {
+    if (!edit_ || selectedSlots().empty()) return;
+    beginTransform();
+    applyTransform({0, 0, 0}, turn);
+    endTransform(true);
 }
 
 void Viewer::deleteSelected() {
-    const auto slot = selectedSlot();
-    if (!slot) return;
-    edit_->remove(*slot);
-    selected_.reset();
+    if (!edit_) return;
+    auto slots = selectedSlots();
+    if (slots.empty()) return;
+    // Last first, so the places of the rest stay right; one step of undo.
+    std::ranges::sort(slots, [](const auto& a, const auto& b) { return std::pair(a.root, a.object) > std::pair(b.root, b.object); });
+    edit_->beginGesture();
+    for (const auto& s : slots) {
+        edit_->remove(s);
+        // Things hidden by hand in this block keep pointing at the same objects.
+        std::vector<scene::ObjectRef> hidden(hidden_.begin(), hidden_.end());
+        hidden_.clear();
+        for (auto r : hidden) {
+            if (editing(r) && r.root == s.root) {
+                if (r.object == s.object) continue;
+                if (r.object > s.object) --r.object;
+            }
+            hidden_.insert(r);
+        }
+    }
+    edit_->endGesture();
+    clearSelection();
     editChanged();
-    status_ = "Deleted.";
+    status_ = std::format("Deleted {}.", slots.size());
 }
 
 void Viewer::duplicateSelected() {
-    const auto slot = selectedSlot();
-    if (!slot) return;
+    if (!edit_) return;
+    const auto slots = selectedSlots();
+    if (slots.empty()) return;
     const int step = snap_ > 1 ? snap_ : 16;
-    if (const auto copy = edit_->duplicate(*slot, step, 0)) {
-        const auto block = selected_->block;
-        editChanged();
-        selected_ = scene::ObjectRef{block, copy->root, copy->object};
-        status_ = "Duplicated.";
+    const auto p = primary();
+    const std::size_t block = p && editing(*p) ? p->block : editBlock_;
+    std::vector<scene::ObjectRef> copies;
+    edit_->beginGesture();
+    for (const auto& s : slots) {
+        if (const auto copy = edit_->duplicate(s, step, 0)) copies.push_back({block, copy->root, copy->object});
     }
+    edit_->endGesture();
+    editChanged();
+    setSelection(std::move(copies));
+    status_ = std::format("Duplicated {}.", selection_.size());
 }
 
 bool Viewer::handleEditKey(const SDL_KeyboardEvent& key) {
     const bool ctrl = (key.mod & SDL_KMOD_CTRL) != 0;
     const bool shift = (key.mod & SDL_KMOD_SHIFT) != 0;
-    if (key.key == SDLK_ESCAPE) {
-        if (grabbing_) endGrab(false);
-        else if (placing_) placing_.reset();
-        else selected_.reset();
+    if (key.key == SDLK_Z && shift && !ctrl) {   // maximise the view under the pointer, or go back to four
+        maximised_ = maximised_ ? std::nullopt : std::optional(pointerView_);
         return true;
+    }
+    if (key.key == SDLK_HOME) {
+        frameOrthoViews();
+        return true;
+    }
+    if (key.key == SDLK_ESCAPE) {
+        if (!moving_.empty() && !grabbing_) {   // a handle drag
+            endTransform(false);
+            drag_ = {};
+        } else if (grabbing_) endGrab(false);
+        else if (placing_) placing_.reset();
+        else clearSelection();
+        return true;
+    }
+    if (drag_.kind != Drag::Kind::None) return false;
+    if (ctrl && key.key == SDLK_A) {
+        selectAll();
+        return true;
+    }
+    if (!ctrl && !shift) {
+        switch (key.key) {
+            case SDLK_H: hideSelected(); return true;
+            case SDLK_U: showAll(); return true;
+            case SDLK_I: toggleIsolate(); return true;
+            case SDLK_R:
+                gizmoMode_ = gizmoMode_ == GizmoMode::Move ? GizmoMode::Turn : GizmoMode::Move;
+                status_ = gizmoMode_ == GizmoMode::Move ? "Move handles." : "Turn handles (3D and Top views).";
+                return true;
+            default: break;
+        }
     }
     if (!edit_ || grabbing_) return false;
     if (ctrl && key.key == SDLK_Z) {
@@ -333,6 +403,7 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     // Points across the lower middle of the view: where the clicks land.
     const double cx = viewWidth_ / 2, cy = viewHeight_ * 0.62;
     int placed = 0;
+    std::vector<scene::ObjectRef> placedRefs;
     for (std::size_t i = 0; i < edit::entityKinds().size(); ++i) {
         const auto& info = edit::entityKinds()[i];
         placing_ = info.kind;
@@ -341,6 +412,7 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
         placeAt(x, cy);
         if (edit_->block().objectCount() != count + 1) return fail(std::format("placing {} failed: {}", info.name, status_));
         ++placed;
+        placedRefs.push_back(*primary());
     }
     placing_.reset();
     log += std::format("placed {} entities ({} -> {} objects)\n", placed, before, edit_->block().objectCount());
@@ -369,6 +441,60 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     editChanged();
     log += "undo and redo ok\n";
 
+    // Several at once: the last three placed, moved and turned together, copied and deleted, then all undone.
+    setSelection({placedRefs.end() - 3, placedRefs.end()});
+    auto positions = [&] {
+        std::vector<std::array<std::int32_t, 3>> out;
+        for (const auto& s : selectedSlots()) {
+            const auto* o = edit_->object(s);
+            out.push_back({o->x, o->y, o->z});
+        }
+        return out;
+    };
+    const auto before3 = positions();
+    if (before3.size() != 3) return fail("three selected, " + std::to_string(before3.size()) + " in the block");
+    nudge(32, 0, 0);
+    for (std::size_t i = 0; i < 3; ++i) {
+        if (positions()[i][0] != before3[i][0] + 32) return fail("a nudge did not move all three");
+    }
+    auto middle = [](const std::vector<std::array<std::int32_t, 3>>& p) {
+        double x = 0, z = 0;
+        for (const auto& q : p) {
+            x += q[0];
+            z += q[2];
+        }
+        return std::pair(x / double(p.size()), z / double(p.size()));
+    };
+    const auto [mx, mz] = middle(positions());
+    turnSelected(512);
+    const auto [tx, tz] = middle(positions());
+    if (std::abs(tx - mx) > 2 || std::abs(tz - mz) > 2) return fail("turning moved the middle of the selection");
+    const auto objects = edit_->block().objectCount();
+    duplicateSelected();
+    if (edit_->block().objectCount() != objects + 3 || selection_.size() != 3) return fail("duplicating three");
+    deleteSelected();
+    if (edit_->block().objectCount() != objects || !selection_.empty()) return fail("deleting three");
+    for (int i = 0; i < 4; ++i) {
+        if (!edit_->undo()) return fail("undoing the group edits");
+        editChanged();
+    }
+    setSelection({placedRefs.end() - 3, placedRefs.end()});
+    if (positions() != before3) return fail("four undos did not put the three back");
+    log += "three at once: nudged, turned about their middle, copied, deleted, undone\n";
+
+    // A box over the whole 3D view, then hiding what it caught and showing it again.
+    boxSelect(0, views_[0].min, {views_[0].min.x + views_[0].size.x, views_[0].min.y + views_[0].size.y}, false, false);
+    const auto boxed = selection_.size();
+    if (boxed == 0) return fail("a box over the whole view selected nothing");
+    hideSelected();
+    if (hidden_.size() != boxed) return fail("hiding the box");
+    std::size_t drawn = 0;
+    updateFlags();
+    for (auto f : flags_.models) drawn += (f & render::InstanceFlags::kHidden) ? 0 : 1;
+    showAll();
+    log += std::format("box selected {}, hid them ({} models still drawn), showed all\n", boxed, drawn);
+    setSelection({placedRefs.back()});
+
     // Save, read back through the same path the viewer opens dungeons with, and compare.
     saveEdit();
     if (edit_->dirty()) return fail("not saved: " + status_);
@@ -385,9 +511,8 @@ void Viewer::drawEditPanel() {
     const auto* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos({viewport->Size.x - 330, 270}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({320, 600}, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Edit")) {
+    if (!ImGui::Begin("Edit", &showEdit_)) {
         ImGui::End();
-        drawConfirmations();
         return;
     }
     if (!edit_) {
@@ -399,7 +524,6 @@ void Viewer::drawEditPanel() {
         ImGui::Separator();
         ImGui::TextDisabled("Patches: %s", patches_ ? patches_->dir().string().c_str() : "(none set)");
         ImGui::End();
-        drawConfirmations();
         return;
     }
 
@@ -447,7 +571,6 @@ void Viewer::drawEditPanel() {
     }
     if (!edit_) {   // stopped just now
         ImGui::End();
-        drawConfirmations();
         return;
     }
 
@@ -515,15 +638,17 @@ void Viewer::drawEditPanel() {
     if (records > 0) ImGui::EndChild();
 
     ImGui::SeparatorText("Keys");
-    ImGui::TextDisabled("Click: place / select   Right-click, Esc: stop\n"
-                        "G: move with the mouse   Del: delete\n"
+    ImGui::TextDisabled("Click: place / select (Shift adds, Ctrl toggles)\n"
+                        "Drag: box select, or move what is selected\n"
+                        "Handles: arrows / square move, ring turns (R)\n"
+                        "Right-click, Esc: stop   G: move with the mouse\n"
+                        "H / U / I: hide / show all / isolate   Del: delete\n"
                         "Arrows: nudge (Shift: 64)   PgUp/PgDn: up/down\n"
                         "Ctrl+D: duplicate   Ctrl+Z / Ctrl+Y: undo / redo\n"
                         "Ctrl+S: save");
     ImGui::Separator();
     ImGui::TextDisabled("Patches: %s", patches_ ? patches_->dir().string().c_str() : "(none set)");
     ImGui::End();
-    drawConfirmations();
 }
 
 void Viewer::drawConfirmations() {
@@ -592,15 +717,10 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("File units (40 = 1 m). Y points down: smaller is higher.");
 
     if (auto* m = std::get_if<formats::RdbModel>(&obj.resource)) {
-        if (ImGui::Button("Turn left")) {
-            m->yRotation -= kQuarterTurn;
-            changed = true;
-        }
+        if (ImGui::Button("Turn left")) turnSelected(-kQuarterTurn);
         ImGui::SameLine();
-        if (ImGui::Button("Turn right")) {
-            m->yRotation += kQuarterTurn;
-            changed = true;
-        }
+        if (ImGui::Button("Turn right")) turnSelected(kQuarterTurn);
+        if (ImGui::IsItemHovered() && selection_.size() > 1) ImGui::SetTooltip("Turns the whole selection about its middle");
         ImGui::SameLine();
         ImGui::TextDisabled("%.0f deg", std::fmod(m->yRotation * 360.0 / 2048.0, 360.0));
     } else if (auto* f = std::get_if<formats::RdbFlat>(&obj.resource)) {

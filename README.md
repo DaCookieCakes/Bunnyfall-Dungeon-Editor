@@ -25,9 +25,21 @@ Data tests read the ARENA2 directory from `DE_ARENA2`. CTest defaults it to `../
 ./build/dungeon_editor --block N0000071        # one block on its own
 ```
 
-Right-drag to look, WASD to move, Q/E down and up, Shift for speed, mouse wheel to change speed. Left-click picks a
-model, flat or marker and shows it in the Inspector. ARENA2 comes from `--arena2`, else `DE_ARENA2`, else
-`../DFData/ARENA2`.
+On the first start a setup window asks for the ARENA2 folder, the Bunnyfall checkout and the project file, and saves
+them in `~/.config/bunnyfall-dungeon-editor/config.json` (**File > Paths** changes them later). `--arena2` or
+`DE_ARENA2` override the saved ARENA2.
+
+The window is laid out like Hammer: a menu bar and toolbar, docked panels (Browse left, Properties/View and Edit
+right, Project below) and four views in the middle: **3D**, **Top**, **Front** and **Side**. Panels can be closed,
+re-docked or torn off; **View > Reset layout** puts them back. **Shift+Z** (or a view's Maximise button) makes the
+view under the pointer fill the area and back again.
+
+- 3D: right-drag to look, WASD to move, Q/E down and up, Shift for speed, wheel changes speed, middle-drag slides.
+- 2D views (wireframe, with a grid whose blue lines are block edges): right- or middle-drag pans, the wheel zooms about
+  the pointer, **Home** fits them to the dungeon. Moving a selection (**G**) in a 2D view keeps its height (Top) or
+  depth (Front/Side).
+- Left-click picks a model, flat or marker in any view and shows it in Properties. **Help > Keys and mouse** lists
+  the rest.
 
 ### Editing a block
 
@@ -38,6 +50,15 @@ press **Edit** in the Edit panel). Then:
   lights) and click a floor, wall or ceiling. It stays armed for the next click; right-click or Esc stops.
 - **Select** with a left-click; the Inspector edits what it is (position, enemy type, gender, passive, slot, scenery
   picture, light radius; models turn in 90-degree steps).
+- **Several at once:** Shift+click adds, Ctrl+click toggles, a left-drag on empty space draws a box (Shift/Ctrl
+  likewise), **Ctrl+A** takes everything shown. Moving, turning, nudging, duplicating and deleting act on all of the
+  edited block's selected objects, each as one undo step.
+- **Handles** on the selection, in every view: drag an arrow to move along X, Y or Z, the square to move freely in the
+  view's plane, or drag a selected object itself. **R** (or the toolbar) switches to the turning ring (3D and Top
+  views), which turns the selection about its middle in steps of the toolbar's turn snap. Right-click or Esc cancels.
+- **Hiding:** the toolbar's **Show** menu hides kinds (architecture, doors, props, scenery, enemies, treasure, quest
+  markers, start/enter, other markers, lights); **H** hides the selection, **I** shows only the selection's block,
+  **U** shows everything again. Hidden things cannot be picked or placed on.
 - **G** moves the selection with the mouse (left-click puts it down, right-click or Esc cancels). Arrows nudge it
   (Shift: 64 units), PageUp/PageDown move it up and down. **Del** deletes, **Ctrl+D** duplicates,
   **Ctrl+Z / Ctrl+Y** undo and redo, **Ctrl+S** saves.

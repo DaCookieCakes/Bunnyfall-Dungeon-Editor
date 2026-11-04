@@ -69,7 +69,7 @@ add_library(de_export STATIC src/export/dfu_json.cpp src/export/world_data_patch
 target_link_libraries(de_export PUBLIC de_formats nlohmann_json_header PRIVATE de_warnings)
 
 # ---- edit: changing a block (entities, undo, save identities); no GPU, no UI ----
-add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp)
+add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp src/edit/transform.cpp)
 target_link_libraries(de_edit PUBLIC de_catalog PRIVATE de_warnings)
 
 # ---- project: the editor's own file of blocks and dungeons ----
@@ -104,6 +104,7 @@ if(DE_BUILD_APP)
     src/render/texture_cache.cpp
     src/render/model_cache.cpp
     src/render/renderer.cpp
+    src/render/render_target.cpp
   )
   target_link_libraries(de_render PUBLIC de_geometry de_scene PkgConfig::EPOXY PRIVATE de_warnings)
 
@@ -112,8 +113,15 @@ if(DE_BUILD_APP)
     src/app/viewer.cpp
     src/app/viewer_edit.cpp
     src/app/viewer_project.cpp
+    src/app/viewer_views.cpp
+    src/app/viewer_select.cpp
+    src/app/viewer_layout.cpp
+    src/app/theme.cpp
+    src/app/config.cpp
+    src/app/setup.cpp
   )
   target_link_libraries(dungeon_editor PRIVATE de_render de_catalog de_edit de_export de_project imgui SDL3::SDL3
+                        nlohmann_json_header
                         de_warnings)
 endif()
 
@@ -155,6 +163,7 @@ if(DE_BUILD_TESTS)
     tests/camera_test.cpp
     tests/export_test.cpp
     tests/edit_test.cpp
+    tests/transform_test.cpp
     tests/grid_test.cpp
     tests/project_test.cpp
     tests/world_export_test.cpp

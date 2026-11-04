@@ -8,7 +8,9 @@
 #include "scene/grid.h"
 #include "scene/picking.h"
 
+#include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace de::render {
 
@@ -18,9 +20,18 @@ struct DrawOptions {
     bool lights = true;     ///< Light gizmos (lights have no picture of their own in the game).
     bool cullBackFaces = true;
     bool wireframe = false;
+    bool wireColours = false;         ///< Wireframe in one even, vivid colour per texture (the 2D views).
     bool grid = false;                ///< The sizing grid (block edges, cells, sockets).
     bool gridOnTop = true;            ///< Show the grid through walls.
     scene::GridOptions gridOptions;
+};
+
+/// Per-instance state for drawing: selected (tinted) or hidden (not drawn). Indexed like Scene::models, flats and
+/// lights; missing entries are neither.
+struct InstanceFlags {
+    static constexpr std::uint8_t kSelected = 1, kHidden = 2;
+    std::vector<std::uint8_t> models, flats, lights;
+    [[nodiscard]] static std::uint8_t at(const std::vector<std::uint8_t>& v, std::size_t i) { return i < v.size() ? v[i] : 0; }
 };
 
 /// Draws a scene: textured models, billboarded flats and markers, light gizmos, the selection tinted.
@@ -31,7 +42,7 @@ public:
     static Result<Renderer> create(TextureCache& textures, ModelCache& models);
 
     void draw(const scene::Scene& scene, const Camera& camera, int width, int height, const DrawOptions& options,
-              std::optional<scene::Hit> selection);
+              const InstanceFlags& flags);
 
     Renderer(Renderer&&) noexcept;
     Renderer& operator=(Renderer&&) = delete;

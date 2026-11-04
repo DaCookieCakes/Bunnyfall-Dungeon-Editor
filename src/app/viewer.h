@@ -3,18 +3,22 @@
 #include "catalog/catalog.h"
 #include "edit/block_edit.h"
 #include "edit/entities.h"
+#include "edit/transform.h"
 #include "export/patch_folder.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
 #include "project/project.h"
 #include "project/world_export.h"
+#include "app/config.h"
+#include "render/render_target.h"
 #include "render/renderer.h"
 
 #include <SDL3/SDL.h>
+#include <imgui.h>
 
 #include <array>
-
 #include <memory>
+#include <unordered_set>
 #include <optional>
 #include <string>
 #include <vector>
@@ -48,16 +52,25 @@ public:
     void cameraToEntrance();
     void cameraToTop();
 
-    void handleEvent(const SDL_Event& event, SDL_Window* window);
+    /// The window it draws in (for the mouse-look grab and file dialogs) and the settings it may change.
+    void attach(SDL_Window* window, Config* config) {
+        window_ = window;
+        config_ = config;
+    }
+    void handleEvent(const SDL_Event& event);
     void update(double seconds);
-    /// Panels for this frame (between ImGui::NewFrame and ImGui::Render).
+    /// The menu, toolbar, panels and view windows for this frame (between ImGui::NewFrame and ImGui::Render).
     void drawUi();
-    /// The 3D view into the bound framebuffer.
-    void drawScene(int pixelWidth, int pixelHeight);
+    /// Draws every view the UI shows into its own picture (after ImGui::Render, before the UI is drawn).
+    void renderViews(float pixelsPerPoint);
+    /// The perspective view alone into the bound framebuffer (screenshots without the UI).
+    void drawPerspective(int pixelWidth, int pixelHeight);
 
+    /// The perspective view's size when no UI lays it out (screenshots and scripted checks).
     void setViewSize(double logicalWidth, double logicalHeight) {
         viewWidth_ = logicalWidth;
         viewHeight_ = logicalHeight;
+        views_[0].size = {float(logicalWidth), float(logicalHeight)};
     }
 
     [[nodiscard]] const std::vector<formats::DungeonRecord>& dungeons() const { return dungeons_; }
@@ -84,6 +97,73 @@ public:
 private:
     Viewer(const formats::Arena2& arena2, catalog::Catalog catalog, std::vector<formats::DungeonRecord> dungeons,
            formats::Palette palette);
+
+    // ---- the views (viewer_views.cpp) ----
+    enum class ViewKind { Perspective, Top, Front, Side };
+    struct View {
+        ViewKind kind = ViewKind::Perspective;
+        const char* name = "";
+        catalog::Vec3 centre;          ///< Orthographic: the world point in the middle of the view.
+        double halfHeight = 1500;      ///< Orthographic zoom: block units from the middle to the top edge.
+        render::RenderTarget target;
+        ImVec2 min{}, size{};          ///< Where the UI showed it last frame (screen points).
+        bool shown = false;            ///< Laid out this frame (so drawn by renderViews).
+    };
+    [[nodiscard]] render::Camera cameraOf(std::size_t view) const;
+    /// The ray under a point of the view the pointer is in (pointerView_).
+    [[nodiscard]] scene::Ray rayAt(double x, double y) const;
+    void drawViewsWindow();
+    void drawView(std::size_t index, ImVec2 min, ImVec2 size);
+    void drawOrthoGrid(std::size_t index);
+    void viewInput(std::size_t index, bool overHandle);
+    /// Fit the orthographic views around the scene.
+    void frameOrthoViews();
+
+    // ---- selection, hiding and gizmos (viewer_select.cpp) ----
+    /// What can be shown or hidden as a kind.
+    enum class Category { Architecture, Door, Prop, Scenery, Enemy, Treasure, Quest, StartEnter, OtherMarker, Light, Count };
+    static constexpr std::size_t kCategories = static_cast<std::size_t>(Category::Count);
+    static const char* categoryName(Category c);
+    [[nodiscard]] Category categoryOf(scene::Hit::Kind kind, std::size_t index) const;
+    [[nodiscard]] const scene::ObjectRef& refOf(scene::Hit::Kind kind, std::size_t index) const;
+    /// Not drawn and not picked: its kind is hidden, it was hidden by hand, or another block is isolated.
+    [[nodiscard]] bool isHidden(scene::Hit::Kind kind, std::size_t index) const;
+    void updateFlags();
+    [[nodiscard]] bool isSelected(const scene::ObjectRef& ref) const { return selectedSet_.contains(ref); }
+    [[nodiscard]] std::optional<scene::ObjectRef> primary() const {
+        return selection_.empty() ? std::nullopt : std::optional(selection_.back());
+    }
+    void setSelection(std::vector<scene::ObjectRef> refs);
+    void clearSelection() { setSelection({}); }
+    /// A click on `hit` (or on nothing): replaces the selection, or with Shift adds to it, with Ctrl toggles.
+    void clickSelect(std::optional<scene::Hit> hit, bool add, bool toggle);
+    /// Everything not hidden whose middle lands inside the screen rectangle of a view.
+    void boxSelect(std::size_t view, ImVec2 a, ImVec2 b, bool add, bool toggle);
+    void selectAll();
+    void hideSelected();
+    void showAll();
+    void toggleIsolate();
+    /// The selected objects of the edited block, each once (copies of the block share them).
+    [[nodiscard]] std::vector<edit::ObjectSlot> selectedSlots() const;
+    /// Middle of the selected objects of the edited block, editor space (in the primary's scene block).
+    [[nodiscard]] std::optional<catalog::Vec3> selectionCentre() const;
+    /// A move or turn of the selection: snapshot, then apply offsets/turns to the snapshot, then keep or cancel.
+    void beginTransform();
+    void applyTransform(std::array<std::int32_t, 3> offset, std::int32_t turn);
+    void endTransform(bool keep);
+    /// Where a world point shows in a view (screen points), if in front of it; and block units per point there.
+    [[nodiscard]] std::optional<ImVec2> toScreen(std::size_t view, catalog::Vec3 world) const;
+    [[nodiscard]] double unitsPerPoint(std::size_t view, catalog::Vec3 at) const;
+    /// Draws the move or turn handles in a view and runs their drags. True while the pointer is over a handle.
+    bool drawGizmo(std::size_t view);
+    /// Runs the drag in progress (box, handle, or a selected object dragged), wherever the pointer is.
+    void continueDrag();
+    void drawShowMenu();
+
+    // ---- the frame (viewer_layout.cpp) ----
+    void drawMenuBar();
+    void drawToolbar();
+    void buildDefaultLayout(unsigned dockspace);
 
     // ---- viewing (viewer.cpp) ----
     void setScene(scene::Scene scene);
@@ -122,6 +202,8 @@ private:
     void grabTo(double x, double y);
     void endGrab(bool keep);
     void nudge(int dx, int dy, int dz);
+    /// The selection turned clockwise (seen from above) about its middle, `turn` file rotation units.
+    void turnSelected(std::int32_t turn);
     void deleteSelected();
     void duplicateSelected();
     bool handleEditKey(const SDL_KeyboardEvent& key);
@@ -164,7 +246,36 @@ private:
     scene::Scene scene_;
     render::Camera camera_;
     render::DrawOptions drawOptions_;
-    std::optional<scene::ObjectRef> selected_;   // what is selected, by where it lives in the blocks
+    struct RefHash {
+        std::size_t operator()(const scene::ObjectRef& r) const {
+            return (r.block * 1000003u) ^ (r.root * 7919u) ^ r.object;
+        }
+    };
+    std::vector<scene::ObjectRef> selection_;              // what is selected; the last is the primary
+    std::unordered_set<scene::ObjectRef, RefHash> selectedSet_;
+    std::unordered_set<scene::ObjectRef, RefHash> hidden_;  // hidden one by one (H)
+    std::array<bool, kCategories> shown_{true, true, true, true, true, true, true, true, true, true};
+    std::optional<std::size_t> isolated_;                   // the one scene block shown
+    render::InstanceFlags flags_;
+    enum class GizmoMode { Move, Turn } gizmoMode_ = GizmoMode::Move;
+    int turnSnap_ = 128;                                    // file rotation units (22.5 degrees); 1 = off
+    // A drag in a view: a box being drawn, or a handle (or a selected object) being dragged.
+    struct Drag {
+        enum class Kind { None, Pending, Box, Axis, Plane, Turn } kind = Kind::None;
+        std::size_t view = 0;
+        ImVec2 press{};                 // where the button went down (screen points)
+        int axis = 0;                   // Axis: 0 X, 1 Y, 2 Z (world)
+        ImVec2 screenAxis{};            // Axis: the handle's direction on screen, unit length
+        double unitsPerPoint = 1;
+        catalog::Vec3 centre;           // the selection's middle when the drag began
+        double startYaw = 0, lastYaw = 0, turned = 0;   // Turn: radians, unwrapped
+        std::array<std::int32_t, 3> lastOffset{};       // what was last applied (to apply only changes)
+        std::int32_t lastTurn = 0;
+        bool add = false, toggle = false;   // Shift, Ctrl at the press
+    } drag_;
+    std::vector<edit::Moving> moving_;                      // the snapshot a transform works from
+    double pivotX_ = 0, pivotZ_ = 0;                        // its turning point, file units
+    std::size_t movingBlock_ = 0;                           // the scene block it is measured in
     double selectedDistance_ = 0;
     std::string status_;
 
@@ -200,6 +311,14 @@ private:
     bool quit_ = false;
 
     double viewWidth_ = 1, viewHeight_ = 1;
+    std::array<View, 4> views_;
+    std::size_t pointerView_ = 0;                // the view pointer coordinates refer to
+    std::optional<std::size_t> maximised_;       // one view filling the views window
+    std::optional<std::size_t> panning_;         // an orthographic view being dragged about
+    SDL_Window* window_ = nullptr;
+    Config* config_ = nullptr;
+    bool pathsOpen_ = false, keysOpen_ = false, resetLayout_ = false;
+    bool showBrowse_ = true, showProperties_ = true, showEdit_ = true, showViewPanel_ = true, showProject_ = true;
     double mouseX_ = 0, mouseY_ = 0;
     bool looking_ = false;     // right mouse held: mouse turns the camera
     double speed_ = 600;       // block units per second

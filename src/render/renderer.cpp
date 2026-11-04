@@ -35,8 +35,20 @@ in vec3 vWorld;
 uniform sampler2D uTexture;
 uniform vec3 uEye;
 uniform vec4 uTint;
+uniform float uWireColours;
 out vec4 fragColour;
 void main() {
+    if (uWireColours > 0.5) {
+        // 2D wireframe: one even colour per texture (its smallest mip is the average), more saturated and lifted so
+        // the lines read on the dark background; no distance falloff.
+        vec3 avg = textureLod(uTexture, vUv, 16.0).rgb;
+        float grey = dot(avg, vec3(0.299, 0.587, 0.114));
+        vec3 vivid = clamp(mix(vec3(grey), avg, 1.5), 0.0, 1.0);
+        float top = max(max(vivid.r, vivid.g), max(vivid.b, 0.001));
+        vivid *= max(1.0, 0.75 / top);
+        fragColour = vec4(mix(vivid, uTint.rgb, uTint.a), 1.0);
+        return;
+    }
     vec4 texel = texture(uTexture, vUv);
     if (texel.a < 0.5) discard;
     vec3 toEye = uEye - vWorld;
@@ -191,7 +203,7 @@ void Renderer::drawLines(const std::vector<scene::GridLine>& lines, const Mat4& 
 }
 
 void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, int height, const DrawOptions& options,
-                    std::optional<scene::Hit> selection) {
+                    const InstanceFlags& flags) {
     glViewport(0, 0, width, height);
     glClearColor(0.06f, 0.06f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -213,11 +225,13 @@ void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, 
     const GLint uModel = modelShader_.uniform("uModel");
     const GLint uTexSize = modelShader_.uniform("uTexSize");
     const GLint uTint = modelShader_.uniform("uTint");
+    glUniform1f(modelShader_.uniform("uWireColours"), options.wireframe && options.wireColours ? 1.0f : 0.0f);
     for (std::size_t i = 0; i < scene.models.size(); ++i) {
         const auto& inst = scene.models[i];
         const auto* model = models_->get(inst.modelId);
-        if (!model) continue;
-        const bool selected = selection && selection->kind == scene::Hit::Kind::Model && selection->index == i;
+        const auto f = InstanceFlags::at(flags.models, i);
+        if (!model || (f & InstanceFlags::kHidden)) continue;
+        const bool selected = (f & InstanceFlags::kSelected) != 0;
         glUniform4fv(uTint, 1, selected ? kSelectionTint : kNoTint);
         setMat4(uModel, modelMatrix(inst.transform.rotation, inst.transform.translation));
         glBindVertexArray(model->vao);
@@ -249,8 +263,9 @@ void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, 
     glBindVertexArray(quadVao_);
     for (std::size_t i = 0; i < scene.flats.size(); ++i) {
         const auto& flat = scene.flats[i];
-        if (flat.editorMarker ? !options.markers : !options.flats) continue;
-        const bool selected = selection && selection->kind == scene::Hit::Kind::Flat && selection->index == i;
+        const auto f = InstanceFlags::at(flags.flats, i);
+        if ((flat.editorMarker ? !options.markers : !options.flats) || (f & InstanceFlags::kHidden)) continue;
+        const bool selected = (f & InstanceFlags::kSelected) != 0;
         glUniform4fv(uFlatTint, 1, selected ? kSelectionTint : kNoTint);
         const auto& tex = textures_->get(flat.archive, flat.record);
         const auto [w, h] = textures_->flatSize(flat.archive, flat.record);
@@ -264,7 +279,9 @@ void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, 
         glUniform2f(uSize, float(kLightGizmoSize), float(kLightGizmoSize));
         for (std::size_t i = 0; i < scene.lights.size(); ++i) {
             const auto& light = scene.lights[i];
-            const bool selected = selection && selection->kind == scene::Hit::Kind::Light && selection->index == i;
+            const auto f = InstanceFlags::at(flags.lights, i);
+            if (f & InstanceFlags::kHidden) continue;
+            const bool selected = (f & InstanceFlags::kSelected) != 0;
             glUniform4fv(uFlatTint, 1, selected ? kSelectionTint : kNoTint);
             glUniform3f(uCentre, float(light.position.x), float(light.position.y), float(light.position.z));
             glDrawArrays(GL_TRIANGLES, 0, 6);

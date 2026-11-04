@@ -51,6 +51,7 @@ std::optional<Hit> pick(const Scene& scene, const Ray& ray, const MeshLookup& me
     for (std::size_t i = 0; options.models && i < scene.models.size(); ++i) {
         const auto& inst = scene.models[i];
         if (options.ignore && inst.ref == *options.ignore) continue;
+        if (options.skip && options.skip(Hit::Kind::Model, i)) continue;
         const auto* mesh = meshes(inst.modelId);
         if (!mesh) continue;
         // Test in the model's own space: rotations keep lengths, so distances carry over unchanged.
@@ -74,6 +75,7 @@ std::optional<Hit> pick(const Scene& scene, const Ray& ray, const MeshLookup& me
         const auto& flat = scene.flats[i];
         if (flat.editorMarker ? !options.markers : !options.flats) continue;
         if (options.ignore && flat.ref == *options.ignore) continue;
+        if (options.skip && options.skip(Hit::Kind::Flat, i)) continue;
         const auto [w, h] = flatSize(flat.archive, flat.record);
         const double radius = std::max(w, h) / 2;
         // A billboard always faces the viewer, so a sphere around its centre stands in for it.
@@ -89,6 +91,7 @@ std::optional<Hit> pick(const Scene& scene, const Ray& ray, const MeshLookup& me
     for (std::size_t i = 0; lightRadius > 0 && i < scene.lights.size(); ++i) {
         const auto& light = scene.lights[i];
         if (options.ignore && light.ref == *options.ignore) continue;
+        if (options.skip && options.skip(Hit::Kind::Light, i)) continue;
         const Vec3 toCentre = sub(light.position, ray.origin);
         const double along = dot(toCentre, ray.direction);
         if (along <= 0) continue;

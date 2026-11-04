@@ -83,6 +83,14 @@ Viewer::Viewer(const formats::Arena2& arena2, catalog::Catalog catalog, std::vec
                formats::Palette palette)
     : arena2_(arena2), catalog_(std::move(catalog)), dungeons_(std::move(dungeons)), textures_(arena2.dir, palette),
       models_(arena2.arch3d) {
+    views_[0].kind = ViewKind::Perspective;
+    views_[0].name = "3D";
+    views_[1].kind = ViewKind::Top;
+    views_[1].name = "Top";
+    views_[2].kind = ViewKind::Front;
+    views_[2].name = "Front";
+    views_[3].kind = ViewKind::Side;
+    views_[3].name = "Side";
 }
 
 std::optional<std::size_t> Viewer::findDungeon(const std::string& key) const {
@@ -98,8 +106,13 @@ std::optional<std::size_t> Viewer::findDungeon(const std::string& key) const {
 void Viewer::setScene(scene::Scene scene) {
     endEdit();
     scene_ = std::move(scene);
-    selected_.reset();
+    clearSelection();
+    hidden_.clear();
+    isolated_.reset();
+    drag_ = {};
+    moving_.clear();
     cameraToStart();
+    frameOrthoViews();
 }
 
 scene::BlockSource Viewer::blockSource() const {
@@ -179,7 +192,7 @@ void Viewer::cameraToTop() {
 }
 
 std::optional<scene::Hit> Viewer::pickAt(double x, double y, scene::PickOptions options) {
-    const auto ray = camera_.rayThrough(x, y, viewWidth_, viewHeight_);
+    const auto ray = rayAt(x, y);
     const scene::MeshLookup meshes = [this](std::uint32_t id) -> const geometry::ModelMesh* {
         const auto* m = models_.get(id);
         return m ? &m->mesh : nullptr;
@@ -193,86 +206,53 @@ scene::PickOptions Viewer::selectOptions() const {
             .markers = drawOptions_.markers,
             .models = true,
             .ignore = std::nullopt,
-            .lightSize = drawOptions_.lights ? render::kLightGizmoSize : 0};
+            .lightSize = drawOptions_.lights ? render::kLightGizmoSize : 0,
+            .skip = [this](scene::Hit::Kind kind, std::size_t i) { return isHidden(kind, i); }};
 }
 
 void Viewer::select(std::optional<scene::Hit> hit) {
-    if (!hit) {
-        selected_.reset();
-        return;
-    }
-    switch (hit->kind) {
-        case scene::Hit::Kind::Model: selected_ = scene_.models[hit->index].ref; break;
-        case scene::Hit::Kind::Flat: selected_ = scene_.flats[hit->index].ref; break;
-        case scene::Hit::Kind::Light: selected_ = scene_.lights[hit->index].ref; break;
-    }
-    selectedDistance_ = hit->distance;
+    clickSelect(hit, false, false);
 }
 
 std::optional<scene::Hit> Viewer::selectionHit() const {
-    if (!selected_) return std::nullopt;
-    if (const auto i = scene::modelIndexOf(scene_, *selected_)) return scene::Hit{scene::Hit::Kind::Model, *i, 0, {}};
-    if (const auto i = scene::flatIndexOf(scene_, *selected_)) return scene::Hit{scene::Hit::Kind::Flat, *i, 0, {}};
+    const auto p = primary();
+    if (!p) return std::nullopt;
+    if (const auto i = scene::modelIndexOf(scene_, *p)) return scene::Hit{scene::Hit::Kind::Model, *i, 0, {}};
+    if (const auto i = scene::flatIndexOf(scene_, *p)) return scene::Hit{scene::Hit::Kind::Flat, *i, 0, {}};
     for (std::size_t i = 0; i < scene_.lights.size(); ++i) {
-        if (scene_.lights[i].ref == *selected_) return scene::Hit{scene::Hit::Kind::Light, i, 0, {}};
+        if (scene_.lights[i].ref == *p) return scene::Hit{scene::Hit::Kind::Light, i, 0, {}};
     }
     return std::nullopt;
 }
 
-void Viewer::handleEvent(const SDL_Event& event, SDL_Window* window) {
-    const auto& io = ImGui::GetIO();
+void Viewer::handleEvent(const SDL_Event& event) {
+    // Clicks, the wheel and drags in a view come through the view windows (viewer_views.cpp). SDL itself delivers what
+    // the UI cannot: the mouse-look's relative motion, its end, and keys.
     switch (event.type) {
-        case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (io.WantCaptureMouse) break;
-            if (event.button.button == SDL_BUTTON_RIGHT) {
-                if (grabbing_) {
-                    endGrab(false);   // right-click cancels a move
-                    break;
-                }
-                if (placing_) {
-                    placing_.reset();   // and stops placing
-                    break;
-                }
-                looking_ = true;
-                SDL_SetWindowRelativeMouseMode(window, true);
-            } else if (event.button.button == SDL_BUTTON_LEFT) {
-                if (grabbing_) endGrab(true);
-                else if (placing_) placeAt(event.button.x, event.button.y);
-                else select(pickAt(event.button.x, event.button.y, selectOptions()));
-            }
-            break;
         case SDL_EVENT_KEY_DOWN:
-            if (io.WantCaptureKeyboard) break;
+            if (ImGui::GetIO().WantCaptureKeyboard) break;
             handleEditKey(event.key);
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
             if (event.button.button == SDL_BUTTON_RIGHT && looking_) {
                 looking_ = false;
-                SDL_SetWindowRelativeMouseMode(window, false);
+                if (window_) SDL_SetWindowRelativeMouseMode(window_, false);
             }
             break;
         case SDL_EVENT_MOUSE_MOTION:
-            if (!looking_) {
-                mouseX_ = event.motion.x;
-                mouseY_ = event.motion.y;
-                if (grabbing_) grabTo(mouseX_, mouseY_);
-            }
             if (looking_) {
                 constexpr double kTurn = 0.0035;   // radians per pixel
                 camera_.yaw += event.motion.xrel * kTurn;
                 camera_.pitch = std::clamp(camera_.pitch - event.motion.yrel * kTurn, -1.55, 1.55);
             }
             break;
-        case SDL_EVENT_MOUSE_WHEEL:
-            if (io.WantCaptureMouse) break;
-            speed_ = std::clamp(speed_ * std::pow(1.2, event.wheel.y), 50.0, 20000.0);
-            break;
         default: break;
     }
 }
 
 void Viewer::update(double seconds) {
-    if (ImGui::GetIO().WantCaptureKeyboard) return;
+    // A held view button counts as the UI wanting the keyboard; flying while looking around must still work.
+    if (ImGui::GetIO().WantCaptureKeyboard && !looking_) return;
     const bool* keys = SDL_GetKeyboardState(nullptr);
     if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL]) return;   // Ctrl+letter is a shortcut, not a move
     const auto f = camera_.forward(), r = camera_.right();
@@ -300,23 +280,15 @@ std::vector<std::string> Viewer::problems() const {
     return all;
 }
 
-void Viewer::drawScene(int pixelWidth, int pixelHeight) {
-    renderer_->draw(scene_, camera_, pixelWidth, pixelHeight, drawOptions_, selectionHit());
-}
-
-void Viewer::drawUi() {
-    ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
-    drawBrowser();
-    drawInspector();
-    drawViewPanel();
-    drawEditPanel();
-    drawProjectPanel();
+void Viewer::drawPerspective(int pixelWidth, int pixelHeight) {
+    updateFlags();
+    renderer_->draw(scene_, camera_, pixelWidth, pixelHeight, drawOptions_, flags_);
 }
 
 void Viewer::drawBrowser() {
     ImGui::SetNextWindowPos({10, 10}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({330, 520}, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Browse")) {
+    if (!ImGui::Begin("Browse", &showBrowse_)) {
         ImGui::End();
         return;
     }
@@ -372,21 +344,28 @@ void Viewer::drawBrowser() {
 void Viewer::drawInspector() {
     ImGui::SetNextWindowPos({10, 540}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({330, 320}, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Inspector")) {
+    if (!ImGui::Begin("Properties", &showProperties_)) {
         ImGui::End();
         return;
     }
-    if (!selected_) {
-        ImGui::TextDisabled("Left-click something in the view.");
+    const auto selected = primary();
+    if (!selected) {
+        ImGui::TextDisabled("Left-click something in a view (Shift adds, Ctrl toggles, drag for a box).");
         ImGui::End();
         return;
     }
-    if (editing(*selected_)) {
+    if (selection_.size() > 1) {
+        ImGui::Text("%zu selected", selection_.size());
+        ImGui::SameLine();
+        ImGui::TextDisabled("(the last picked is shown)");
+        ImGui::Separator();
+    }
+    if (editing(*selected)) {
         drawEditInspector(*selectedSlot());
         ImGui::End();
         return;
     }
-    const auto& ref = *selected_;
+    const auto& ref = *selected;
     const auto& block = scene_.blocks[ref.block];
     const auto& obj = objectOf(scene_, ref);
     ImGui::Text("%s%s", block.name.c_str(), block.isStartingBlock ? "  (starting block)" : "");
@@ -445,7 +424,7 @@ std::optional<double> Viewer::floorBelow(catalog::Vec3 point) {
     };
     const scene::FlatSizeLookup sizes = [this](int a, int r) { return textures_.flatSize(a, r); };
     const auto hit = scene::pick(scene_, {point, {0, -1, 0}}, meshes, sizes,
-                                 {.flats = false, .markers = false, .models = true, .ignore = std::nullopt, .lightSize = 0});
+                                 {.flats = false, .markers = false, .models = true, .ignore = std::nullopt, .lightSize = 0, .skip = {}});
     if (!hit) return std::nullopt;
     return point.y - hit->distance;
 }
@@ -474,15 +453,11 @@ void Viewer::drawViewPanel() {
     const auto* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos({viewport->Size.x - 290, 10}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize({280, 250}, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("View")) {
+    if (!ImGui::Begin("View", &showViewPanel_)) {
         ImGui::End();
         return;
     }
-    ImGui::Checkbox("Flats", &drawOptions_.flats);
-    ImGui::SameLine();
-    ImGui::Checkbox("Markers", &drawOptions_.markers);
-    ImGui::SameLine();
-    ImGui::Checkbox("Lights", &drawOptions_.lights);
+    if (ImGui::CollapsingHeader("Show", ImGuiTreeNodeFlags_DefaultOpen)) drawShowMenu();
     ImGui::Checkbox("Cull back faces", &drawOptions_.cullBackFaces);
     ImGui::SameLine();
     ImGui::Checkbox("Wireframe", &drawOptions_.wireframe);
@@ -513,7 +488,7 @@ void Viewer::drawViewPanel() {
             if (const auto y = floorBelow(camera_.position)) drawOptions_.gridOptions.height = *y;
         }
         ImGui::SameLine();
-        ImGui::BeginDisabled(!selected_);
+        ImGui::BeginDisabled(selection_.empty());
         if (ImGui::SmallButton("selection")) {
             if (const auto y = selectedBase()) drawOptions_.gridOptions.height = *y;
         }
