@@ -218,6 +218,7 @@ void Viewer::handleEvent(const SDL_Event& event) {
             break;
         case SDL_EVENT_MOUSE_MOTION:
             if (looking_) {
+                if (rightPress_) rightPress_->moved += std::abs(event.motion.xrel) + std::abs(event.motion.yrel);
                 constexpr double kTurn = 0.0035;   // radians per pixel
                 camera_.yaw += event.motion.xrel * kTurn;
                 camera_.pitch = std::clamp(camera_.pitch - event.motion.yrel * kTurn, -1.55, 1.55);

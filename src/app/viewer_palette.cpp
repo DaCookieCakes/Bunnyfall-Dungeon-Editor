@@ -45,6 +45,7 @@ void Viewer::armModel(std::uint32_t id) {
     }
     if (grabbing_) endGrab(false);
     placing_.reset();
+    setup_.reset();   // a quick setup arms its model afterwards
     placingModel_ = id;
     const auto* info = catalog_.model(id);
     status_ = std::format("Placing model {} ({}): click to put it down, [ and ] turn it, right-click or Esc stops.", id,

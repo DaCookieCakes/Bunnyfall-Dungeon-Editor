@@ -494,6 +494,13 @@ Run before every export. Errors block export; warnings don't.
    *UI pass (2026-11-04):* Properties is a floating window opened by a double-click (or Alt+Enter), like Hammer's
    Object Properties, with General and Triggers tabs; the Edit panel keeps only the Place list, whose fixed enemy and
    scenery entries pop up a picker first.
+   *Step 3 (2026-11-04): done.* Doors and locks. A starting-lock picker (the 16 values; it replaces the door's own
+   trigger, which shares the field) and a warning for a magic lock nothing opens. Bunnyfall's OpenDoor also unlocks,
+   so a lever opens a locked door. A right-click menu in the views (a right-click that neither looks nor pans):
+   lever or plate that opens a door (the classic 61028 L0Z, used, turns 45° about Z over 0.6 s; 74087 TSB, stood on,
+   passes it on; placed, linked and the door set as one undo step), "opened by" / "set off by" (link picked
+   backwards), secret wall (slides up its own height) and secret door (swings), teleporter, trap, and placing a lever
+   or plate on empty space.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).
 

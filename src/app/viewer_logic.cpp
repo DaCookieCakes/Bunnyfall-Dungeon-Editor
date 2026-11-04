@@ -131,8 +131,9 @@ void Viewer::drawLogicLinks(std::size_t index) {
             auto* list = ImGui::GetWindowDrawList();
             list->PushClipRect(views_[index].min, add(views_[index].min, views_[index].size), true);
             dashedLine(list, *p, mouse, kChainColour, 2.0f);
-            arrowHead(list, *p, mouse, kChainColour, 11.0f);
-            list->AddText({mouse.x + 12, mouse.y + 4}, kChainColour, "next object?");
+            if (linkReverse_) arrowHead(list, mouse, *p, kChainColour, 11.0f);   // it will point into this one
+            else arrowHead(list, *p, mouse, kChainColour, 11.0f);
+            list->AddText({mouse.x + 12, mouse.y + 4}, kChainColour, linkReverse_ ? "set off by?" : "next object?");
             list->PopClipRect();
         }
     }
@@ -224,11 +225,19 @@ void Viewer::drawLogicSection(const scene::ObjectRef& ref) {
         ImGui::SetItemTooltip("Select it and frame it (offset %d)", t.position);
     };
 
-    if (door) {
+    if (door && !editable) {
         if (const auto lock = logic::startingLock(block, obj)) {
             ImGui::Text("Door, locked: level %d%s", lock->value, lock->magic() ? " (magic: can't be picked or bashed)" : "");
         } else {
             ImGui::TextUnformatted("Door, not locked");
+        }
+    }
+    if (door) {
+        const auto lock = logic::startingLock(block, obj);
+        const bool opened = node && (node->action == logic::action::kOpenDoor || node->action == logic::action::kUnlockDoor) &&
+                            !incoming.empty();
+        if (lock && lock->magic() && !opened) {
+            warn("A magic lock, and nothing here opens or unlocks it: only a spell gets the player through.");
         }
     }
     if (editable) {
@@ -447,6 +456,29 @@ void Viewer::drawLogicEditor(const scene::ObjectRef& ref, const std::vector<cons
         ImGui::EndCombo();
     }
 
+    if (door) {
+        const auto lockNow = logic::startingLock(block, obj);
+        const int index = lockNow ? lockNow->index : 0;
+        auto lockLabel = [](int i) {
+            const int v = logic::kLockValues[i];
+            if (v == 0) return std::string("Not locked");
+            return std::format("Level {}{}", v, v >= logic::kMagicLock ? " (magic)" : "");
+        };
+        ImGui::SetNextItemWidth(width);
+        if (ImGui::BeginCombo("Starting lock", lockLabel(index).c_str())) {
+            for (int i = 0; i < 16; ++i) {
+                if (ImGui::Selectable(lockLabel(i).c_str(), i == index)) {
+                    if (auto* mm = std::get_if<formats::RdbModel>(&obj.resource)) {
+                        mm->triggerFlagStartingLock = static_cast<std::uint32_t>(i) << 4;   // replaces a trigger
+                    }
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Picking and bashing work below 20; magic locks need a spell or something that opens it.\n"
+                              "A lock replaces the door's own trigger (they share a field).");
+    }
     if (node) {
         // When.
         const auto lock = logic::startingLock(block, obj);
@@ -621,7 +653,9 @@ void Viewer::drawLogicEditor(const scene::ObjectRef& ref, const std::vector<cons
 
 void Viewer::finishLink(std::optional<scene::Hit> hit) {
     const auto from = *linkFrom_;
+    const bool reverse = linkReverse_;
     linkFrom_.reset();
+    linkReverse_ = false;
     if (!hit) return;
     const auto to = refOf(hit->kind, hit->index);
     if (!editing(to)) {
@@ -629,6 +663,35 @@ void Viewer::finishLink(std::optional<scene::Hit> hit) {
         return;
     }
     if (to.root == from.root && to.object == from.object) return;
+    if (reverse) {   // `to` is what sets `from` off: give it an action if it has none, and a door its opening
+        const auto* sourceNow = edit_->object({to.root, to.object});
+        if (!sourceNow || !logic::canAct(*sourceNow)) {
+            status_ = "Markers and lights can't set anything off.";
+            return;
+        }
+        auto source = *sourceNow;
+        auto target = *edit_->object({from.root, from.object});
+        const auto& block = edit_->block();
+        edit_->beginGesture();
+        if (!logic::nodeOf(block, source)) {
+            logic::setAction(source, logic::action::kActivate);
+            if (!logic::startingLock(block, source)) logic::setTrigger(source, logic::trigger::kUse);
+        }
+        logic::setNext(source, target.position);
+        const auto* tm = target.model();
+        if (tm && logic::isActionDoor(block, *tm)) {
+            const auto node = logic::nodeOf(block, target);
+            if (!node || node->action != logic::action::kOpenDoor) {
+                logic::setAction(target, logic::action::kOpenDoor);
+                edit_->replace({from.root, from.object}, std::move(target));
+            }
+        }
+        edit_->replace({to.root, to.object}, std::move(source));
+        edit_->endGesture();
+        editChanged();
+        setSelection({from});
+        return;
+    }
     const auto* src = edit_->object({from.root, from.object});
     const auto* target = edit_->object({to.root, to.object});
     if (!src || !target) return;
@@ -661,6 +724,195 @@ void Viewer::takeOutOfChain(const scene::ObjectRef& ref) {
     edit_->replace({ref.root, ref.object}, std::move(changedSelf));
     edit_->endGesture();
     editChanged();
+}
+
+// ---- quick setups ----
+
+namespace {
+
+constexpr std::uint32_t kLeverModel = 61028;   // the classic wall lever (L0Z): used, it turns 45 degrees
+constexpr std::uint32_t kPlateModel = 74087;   // the classic floor plate (TSB): stood on, it passes it on
+constexpr std::uint32_t kLeverTurnTime = 12;   // 0.6 s, as classic levers
+
+} // namespace
+
+void Viewer::finishSetup(const scene::ObjectRef& placed) {
+    const auto setup = *setup_;
+    setup_.reset();
+    const auto* doorNow = edit_->object({setup.door.root, setup.door.object});
+    if (!doorNow) return;
+    auto door = *doorNow;
+    auto made = *edit_->object({placed.root, placed.object});
+    if (setup.kind == Setup::LeverOpensDoor) {
+        logic::setTurn(made, {logic::TurnAxis::Z, 45, kLeverTurnTime});
+        logic::setTrigger(made, logic::trigger::kUse);
+    } else {
+        logic::setAction(made, logic::action::kActivate);
+        logic::setTrigger(made, logic::trigger::kWalkOn);
+    }
+    logic::setNext(made, door.position);
+    edit_->replace({placed.root, placed.object}, std::move(made));
+    const auto node = logic::nodeOf(edit_->block(), door);
+    if (!node || node->action != logic::action::kOpenDoor) {
+        logic::setAction(door, logic::action::kOpenDoor);   // opening also unlocks
+        edit_->replace({setup.door.root, setup.door.object}, std::move(door));
+    }
+    setSelection({placed});
+    status_ = setup.kind == Setup::LeverOpensDoor ? "The lever opens the door (and unlocks it)."
+                                                  : "Standing on the plate opens the door (and unlocks it).";
+}
+
+void Viewer::setDoorLock(const scene::ObjectRef& ref, int lockIndex) {
+    auto obj = *edit_->object({ref.root, ref.object});
+    if (auto* m = std::get_if<formats::RdbModel>(&obj.resource)) {
+        m->triggerFlagStartingLock = static_cast<std::uint32_t>(lockIndex) << 4;
+        commitObject(ref, std::move(obj));
+    }
+}
+
+void Viewer::applyQuickSetup(const scene::ObjectRef& ref, QuickSetup kind) {
+    const auto* now = edit_->object({ref.root, ref.object});
+    if (!now || !logic::canAct(*now)) return;
+    auto obj = *now;
+    const auto node = logic::nodeOf(edit_->block(), obj);
+    bool pick = false;
+    switch (kind) {
+        case QuickSetup::UsedSetsOff:
+        case QuickSetup::PlateSetsOff:
+            if (!node) logic::setAction(obj, logic::action::kActivate);
+            logic::setTrigger(obj, kind == QuickSetup::UsedSetsOff ? logic::trigger::kUse : logic::trigger::kWalkOn);
+            pick = true;
+            break;
+        case QuickSetup::SlidesUp: {
+            int height = 128;
+            if (const auto* m = obj.model()) {
+                if (const auto* info = catalog_.model(edit_->block().modelRefs[m->modelIndex].modelIdNum)) {
+                    height = std::max(8, static_cast<int>(std::lround(info->bounds.size().y)));
+                }
+            }
+            logic::setMove(obj, {logic::Direction::Up, height, 40});
+            logic::setTrigger(obj, logic::trigger::kUse);
+            break;
+        }
+        case QuickSetup::SwingsOpen:
+            logic::setAction(obj, logic::action::kOpenDoor);
+            logic::setTrigger(obj, logic::trigger::kUse);
+            break;
+        case QuickSetup::Teleporter:
+            logic::setAction(obj, logic::action::kTeleport);
+            logic::setTrigger(obj, logic::trigger::kWalkInto);
+            pick = true;
+            break;
+        case QuickSetup::TrapHurts:
+            logic::setAction(obj, logic::action::kHurt22);
+            logic::setAxis(obj, 2);
+            logic::setTrigger(obj, logic::trigger::kWalkOn);
+            break;
+    }
+    commitObject(ref, std::move(obj));
+    setSelection({ref});
+    if (pick) {
+        linkFrom_ = ref;
+        linkReverse_ = false;
+        status_ = kind == QuickSetup::Teleporter ? "Now click where it takes the player." : "Now click what it sets off.";
+    }
+}
+
+void Viewer::drawViewContextMenu() {
+    if (!context_) return;
+    if (!context_->ref) {
+        ImGui::TextDisabled("Nothing here");
+        if (edit_) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Place a lever")) armModel(kLeverModel);
+            if (ImGui::MenuItem("Place a pressure plate")) armModel(kPlateModel);
+        }
+        return;
+    }
+    const auto ref = *context_->ref;
+    if (ref.block >= scene_.blocks.size()) return;
+    const auto& block = scene_.blocks[ref.block].data;
+    if (ref.root >= block.roots.size() || ref.object >= block.roots[ref.root].objects.size()) return;
+    const auto& obj = block.roots[ref.root].objects[ref.object];
+    ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "%s", logic::objectLabel(block, obj).c_str());
+    ImGui::Separator();
+    if (ImGui::MenuItem("Properties", "Alt+Enter")) openProperties(context_->at);
+    if (ImGui::MenuItem("Frame", "F")) frameSelection();
+    const bool linked = std::ranges::any_of(sceneLinks(), [&](const SceneLink& l) { return l.from == ref || l.to == ref; });
+    if (linked && ImGui::MenuItem("Select its whole chain")) {
+        setSelection({ref});
+        const auto chain = selectedChains();
+        std::vector<scene::ObjectRef> refs(chain.begin(), chain.end());
+        std::erase(refs, ref);
+        refs.push_back(ref);
+        setSelection(std::move(refs));
+    }
+    if (!editing(ref)) {
+        const auto& sb = scene_.blocks[ref.block];
+        if (sb.bsaIndex != scene::kNoBsaIndex || isProjectBlock(sb.name)) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Edit this block")) beginEdit(ref.block);
+        }
+        return;
+    }
+    if (!logic::canAct(obj)) return;
+    const auto* m = obj.model();
+    const bool door = m && logic::isActionDoor(block, *m);
+    const auto node = logic::nodeOf(block, obj);
+
+    ImGui::SeparatorText("Triggers");
+    if (node) {
+        if (ImGui::MenuItem("Link to...")) {
+            linkFrom_ = ref;
+            linkReverse_ = false;
+        }
+        if (ImGui::MenuItem("Take out of chain")) takeOutOfChain(ref);
+        if (ImGui::MenuItem("Remove its action")) {
+            auto o = obj;
+            logic::setAction(o, 0);
+            commitObject(ref, std::move(o));
+        }
+    }
+    if (door) {
+        if (ImGui::MenuItem("Lever that opens it...")) {
+            armModel(kLeverModel);
+            setup_ = PendingSetup{Setup::LeverOpensDoor, ref};
+            status_ = "Click a wall to put the lever on ([ and ] turn it).";
+        }
+        if (ImGui::MenuItem("Pressure plate that opens it...")) {
+            armModel(kPlateModel);
+            setup_ = PendingSetup{Setup::PlateOpensDoor, ref};
+            status_ = "Click a floor to put the plate on.";
+        }
+        if (ImGui::MenuItem("Opened by... (pick it)")) {
+            linkFrom_ = ref;
+            linkReverse_ = true;
+        }
+        ImGui::SetItemTooltip("Click anything in the block: it will open this door when used (or as it is set off).");
+        if (ImGui::BeginMenu("Starting lock")) {
+            const auto lock = logic::startingLock(block, obj);
+            for (int i = 0; i < 16; ++i) {
+                const int v = logic::kLockValues[i];
+                const auto label = v == 0 ? std::string("Not locked")
+                                          : std::format("Level {}{}", v, v >= logic::kMagicLock ? " (magic)" : "");
+                if (ImGui::MenuItem(label.c_str(), nullptr, (lock ? lock->index : 0) == i)) setDoorLock(ref, i);
+            }
+            ImGui::EndMenu();
+        }
+        return;
+    }
+    if (ImGui::MenuItem("When used, sets off... (pick it)")) applyQuickSetup(ref, QuickSetup::UsedSetsOff);
+    if (ImGui::MenuItem("When stood on, sets off... (pick it)")) applyQuickSetup(ref, QuickSetup::PlateSetsOff);
+    if (ImGui::MenuItem("Set off by... (pick it)")) {
+        linkFrom_ = ref;
+        linkReverse_ = true;
+    }
+    if (m) {
+        if (ImGui::MenuItem("Secret wall: slides up when used")) applyQuickSetup(ref, QuickSetup::SlidesUp);
+        if (ImGui::MenuItem("Secret door: swings open when used")) applyQuickSetup(ref, QuickSetup::SwingsOpen);
+    }
+    if (ImGui::MenuItem("Teleporter: walking into it goes to... (pick it)")) applyQuickSetup(ref, QuickSetup::Teleporter);
+    if (ImGui::MenuItem("Trap: hurts whoever stands on it")) applyQuickSetup(ref, QuickSetup::TrapHurts);
 }
 
 // ---- preview ----

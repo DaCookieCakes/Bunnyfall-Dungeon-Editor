@@ -89,6 +89,13 @@ press **Edit** in the Edit panel). Then:
   click the next object in any view (Esc or right-click cancels); **Unlink**; **Take out of chain** joins what set
   it off to what it sets off. **Preview** plays the chain's moves, turns and swings in the views, forward and back.
   Every change is one undo step. A chain fires all at once, as in the game.
+- **Right-click** (without dragging) on anything in a view opens a menu: Properties, Frame, Select its whole chain,
+  and on the edited block quick setups. On a door: **Lever that opens it...** / **Pressure plate that opens it...**
+  (place the classic lever 61028 or plate 74087; it is linked, and the door opens and unlocks, as one undo step),
+  **Opened by...** (click anything to make it open the door), and **Starting lock** (16 levels; 20 and up are magic:
+  no picking or bashing, so the Triggers tab warns when nothing opens one). On anything else: when used / stood on
+  sets off..., set off by..., a secret wall that slides up or swings open when used, a teleporter, a trap. On empty
+  space: place a lever or a plate. A door's lock is also in its Triggers tab.
 - **G** moves the selection with the mouse (left-click puts it down, right-click or Esc cancels). Arrows nudge it
   (Shift: 64 units), PageUp/PageDown move it up and down. **Del** deletes, **Ctrl+D** duplicates,
   **Ctrl+Z / Ctrl+Y** undo and redo, **Ctrl+S** saves.

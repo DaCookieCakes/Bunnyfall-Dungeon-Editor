@@ -180,6 +180,7 @@ private:
         return placing_.has_value() || placingModel_.has_value() || placingPrefab_.has_value();
     }
     void stopPlacing() {
+        setup_.reset();
         placing_.reset();
         placingModel_.reset();
         placingPrefab_.reset();
@@ -292,6 +293,13 @@ private:
     /// The editable part of the Logic section, for an object of the edited block.
     void drawLogicEditor(const scene::ObjectRef& ref, const std::vector<const SceneLink*>& incoming);
     void selectAndFrame(const scene::ObjectRef& ref);
+    void drawViewContextMenu();
+    /// The quick setups that change one object in place.
+    enum class QuickSetup { UsedSetsOff, PlateSetsOff, SlidesUp, SwingsOpen, Teleporter, TrapHurts };
+    void applyQuickSetup(const scene::ObjectRef& ref, QuickSetup kind);
+    void setDoorLock(const scene::ObjectRef& ref, int lockIndex);
+    /// Finishes a pending setup on the model just placed at `placed` (inside the placing's undo step).
+    void finishSetup(const scene::ObjectRef& placed);
     /// Puts a changed object of the edited block back (one undo step, or part of an open gesture).
     void commitObject(const scene::ObjectRef& ref, formats::RdbObject obj);
     /// A left click while picking the next object for linkFrom_.
@@ -364,6 +372,26 @@ private:
     int pickArchive_ = 0, pickRecord_ = 0;                  // the scenery picker's place, for a placed flat
     int focusInspectorFrames_ = 0;                         // bring Properties to the front for a few frames
     std::optional<scene::ObjectRef> linkFrom_;              // picking the next object for this one
+    bool linkReverse_ = false;                              // picking what sets linkFrom_ off, not what it sets off
+    // A right-click that didn't drag opens a menu for what was under the pointer.
+    struct RightPress {
+        std::size_t view = 0;
+        ImVec2 at;
+        double time = 0, moved = 0;
+    };
+    std::optional<RightPress> rightPress_;
+    struct ContextMenu {
+        std::optional<scene::ObjectRef> ref;
+        ImVec2 at;
+    };
+    std::optional<ContextMenu> contextRequest_, context_;
+    // A quick setup waiting for its new model to be placed (a lever or plate for a door).
+    enum class Setup { LeverOpensDoor, PlateOpensDoor };
+    struct PendingSetup {
+        Setup kind;
+        scene::ObjectRef door;
+    };
+    std::optional<PendingSetup> setup_;
     struct Preview {
         struct Item {
             std::optional<std::pair<scene::Hit::Kind, std::size_t>> instance;

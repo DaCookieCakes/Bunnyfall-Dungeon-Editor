@@ -238,9 +238,18 @@ void Viewer::placeAt(double x, double y) {
         formats::RdbModel m;
         m.yRotation = placeTurn_;
         obj.resource = m;
+        if (setup_) edit_->beginGesture();   // the model and its setup are one undo step
         const auto slot = edit_->addModel(*placingModel_, info->description, std::move(obj));
         if (!slot) {
+            if (setup_) edit_->endGesture();
             status_ = "This block already uses 750 different models; no slot is free for another.";
+            return;
+        }
+        if (setup_) {
+            finishSetup({at->second, slot->root, slot->object});
+            edit_->endGesture();
+            stopPlacing();   // a setup places one
+            editChanged();
             return;
         }
         editChanged();
@@ -691,6 +700,48 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
         }
         log += "logic: lever (use) -> piece (moves up 128 over 2 s), linked by a click, previewed, taken out, undone\n";
     }
+    // Doors: a lever that opens one (placed as one undo step), a magic lock, and the lock undone.
+    {
+        std::optional<scene::ObjectRef> doorRef;
+        const auto& eb = edit_->block();
+        for (std::size_t r = 0; r < eb.roots.size() && !doorRef; ++r) {
+            for (std::size_t o = 0; o < eb.roots[r].objects.size(); ++o) {
+                const auto* dm = eb.roots[r].objects[o].model();
+                if (dm && logic::isActionDoor(eb, *dm)) {
+                    doorRef = scene::ObjectRef{editBlock_, r, o};
+                    break;
+                }
+            }
+        }
+        if (!doorRef) return fail("no door in the edited block");
+        const auto steps = edit_->block().objectCount();
+        armModel(61028);
+        setup_ = PendingSetup{Setup::LeverOpensDoor, *doorRef};
+        placeAt(cx, cy);
+        if (setup_ || placingAnything()) return fail("the lever setup is still waiting: " + status_);
+        if (edit_->block().objectCount() != steps + 1) return fail("the lever was not placed: " + status_);
+        const auto lever = *primary();
+        const auto leverNode = logic::nodeOf(edit_->block(), *edit_->object({lever.root, lever.object}));
+        const auto& door = *edit_->object({doorRef->root, doorRef->object});
+        const auto doorNode = logic::nodeOf(edit_->block(), door);
+        if (!leverNode || leverNode->trigger != logic::trigger::kUse || leverNode->action != logic::action::kTurn ||
+            leverNode->next != door.position) {
+            return fail("the lever does not turn when used and set the door off");
+        }
+        if (!doorNode || doorNode->action != logic::action::kOpenDoor) return fail("the door was not made to open");
+        const auto doorLabel = logic::objectLabel(edit_->block(), door);
+        setDoorLock(*doorRef, 11);
+        const auto lock = logic::startingLock(edit_->block(), *edit_->object({doorRef->root, doorRef->object}));
+        if (!lock || lock->value != 25 || !lock->magic()) return fail("the door's lock");
+        edit_->undo();   // the lock
+        edit_->undo();   // the lever and the door's opening, together
+        editChanged();
+        if (edit_->block().objectCount() != steps) return fail("one undo did not take the lever setup away");
+        edit_->redo();
+        edit_->redo();
+        editChanged();
+        log += std::format("doors: a lever opens {} (one undo step), magic lock 25, undone and redone\n", doorLabel);
+    }
     setSelection({*pieceRef});   // left selected, for a screenshot of its texture variants and logic
     focusInspectorFrames_ = 8;
     showProperties_ = true;
@@ -753,8 +804,14 @@ bool Viewer::sceneryPicker(int& archive, int& record) {
         return false;
     }
     bool picked = false;
+    // Six pictures a row, sized from the theme's own button padding and spacing, plus room for the scrollbar.
     const float cell = 48;
-    if (ImGui::BeginChild("records", {6 * (cell + 8) + 12, 280}, ImGuiChildFlags_Borders)) {
+    const auto& style = ImGui::GetStyle();
+    const float button = cell + 2 * style.FramePadding.x;
+    const float width = 6 * button + 5 * style.ItemSpacing.x + 2 * style.WindowPadding.x + style.ScrollbarSize + 2;
+    if (ImGui::BeginChild("records", {width, 300}, ImGuiChildFlags_Borders)) {
+        const int perRow = std::max(1, static_cast<int>((ImGui::GetContentRegionAvail().x + style.ItemSpacing.x) /
+                                                        (button + style.ItemSpacing.x)));
         for (int r = 0; r < records; ++r) {
             ImGui::PushID(r);
             const bool chosen = r == record;
@@ -765,7 +822,7 @@ bool Viewer::sceneryPicker(int& archive, int& record) {
             }
             if (chosen) ImGui::PopStyleColor();
             ImGui::SetItemTooltip("%d/%d", archive, r);
-            if ((r + 1) % 6 != 0) ImGui::SameLine();
+            if ((r + 1) % perRow != 0 && r + 1 < records) ImGui::SameLine();
             ImGui::PopID();
         }
     }
@@ -782,7 +839,7 @@ void Viewer::drawEditPanel() {
         return;
     }
     if (!edit_) {
-        ImGui::TextWrapped("Select something in a block and press \"Edit this block\" in the Inspector.");
+        ImGui::TextWrapped("Select something in a block and press \"Edit this block\" in Properties (double-click it), or right-click it.");
         if (scene_.blocks.size() == 1 &&
             (scene_.blocks[0].bsaIndex != scene::kNoBsaIndex || isProjectBlock(scene_.blocks[0].name))) {
             if (ImGui::Button(std::format("Edit {}", scene_.blocks[0].name).c_str())) beginEdit(0);

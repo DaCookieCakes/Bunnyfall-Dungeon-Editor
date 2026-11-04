@@ -107,6 +107,32 @@ void Viewer::drawViewsWindow() {
         if (grabbing_) grabTo(mouseX_, mouseY_);
         continueDrag();
         updateGhost();
+
+        // A right-click that neither looked nor panned: the menu for what is under the pointer.
+        if (rightPress_ && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+            const auto press = *rightPress_;
+            rightPress_.reset();
+            if (press.moved < 6 && ImGui::GetTime() - press.time < 0.5) {
+                pointerView_ = press.view;
+                const auto& pv = views_[press.view];
+                ContextMenu menu{std::nullopt, press.at};
+                if (const auto hit = pickAt(press.at.x - pv.min.x, press.at.y - pv.min.y, selectOptions())) {
+                    menu.ref = refOf(hit->kind, hit->index);
+                    if (!isSelected(*menu.ref)) setSelection({*menu.ref});   // like Hammer: right-click selects
+                }
+                contextRequest_ = menu;
+            }
+        }
+        if (contextRequest_) {
+            context_ = contextRequest_;
+            contextRequest_.reset();
+            ImGui::SetNextWindowPos(context_->at);
+            ImGui::OpenPopup("view-menu");
+        }
+        if (ImGui::BeginPopup("view-menu")) {
+            drawViewContextMenu();
+            ImGui::EndPopup();
+        }
     }
     ImGui::End();
 }
@@ -227,9 +253,11 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
         else if (grabbing_) endGrab(false);
         else if (placingAnything()) stopPlacing();
         else if (!ortho) {
+            rightPress_ = RightPress{index, io.MousePos, ImGui::GetTime(), 0};
             looking_ = true;
             if (window_) SDL_SetWindowRelativeMouseMode(window_, true);
         } else {
+            rightPress_ = RightPress{index, io.MousePos, ImGui::GetTime(), 0};
             panning_ = index;
         }
     }
@@ -239,6 +267,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Right) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
             panning_.reset();
         } else if (io.MouseDelta.x != 0 || io.MouseDelta.y != 0) {
+            if (rightPress_) rightPress_->moved += std::abs(io.MouseDelta.x) + std::abs(io.MouseDelta.y);
             const auto cam = cameraOf(index);
             const auto r = cam.right(), u = cam.up();
             // Orthographic: the picture follows the pointer exactly. 3D: the camera slides, faster at speed.

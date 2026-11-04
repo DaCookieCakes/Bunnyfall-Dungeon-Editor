@@ -116,6 +116,7 @@ void Viewer::drawUi() {
                     {"F", "frame the selection in every view"},
                     {"Left-click", "select (Shift adds, Ctrl toggles); with a palette entry armed, place"},
                     {"Double-click, Alt+Enter", "the object's Properties (General and Triggers tabs)"},
+                    {"Right-click (no drag)", "a menu for what is under the pointer: properties, chain, quick setups"},
                     {"Left-drag", "a box selects (Shift adds, Ctrl toggles); on a selected object, moves the selection"},
                     {"Ctrl+A", "select everything shown (in the edited block, when editing)"},
                     {"Handles", "arrows move along X/Y/Z, the square freely; the ring turns (R switches)"},
