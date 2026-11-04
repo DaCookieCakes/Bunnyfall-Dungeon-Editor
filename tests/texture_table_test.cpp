@@ -92,3 +92,22 @@ TEST_CASE("ARENA2: every dungeon knows its location, type and climate") {
     REQUIRE(castle != dungeons->end());
     CHECK(castle->map.mapId == 1291010263);   // Daggerfall Unity's main-story id for Castle Daggerfall
 }
+
+TEST_CASE("ARENA2: every classic location has a name and sits in its own region") {
+    DE_REQUIRE_ARENA2(a);
+    auto locations = de::formats::readLocations(a->maps);
+    REQUIRE(locations);
+    CHECK(locations->size() == 15251);
+    int inRegion = 0;
+    for (const auto& l : *locations) {
+        CHECK_FALSE(l.name.empty());
+        if (de::formats::regionAtPixel(a->politic, l.pixelX(), l.pixelY()) == l.regionIndex) ++inRegion;
+    }
+    CHECK(inRegion == 15248);   // the political map read one pixel east; 3 classic places sit just over a border
+    const auto hold = std::ranges::find_if(*locations, [](const auto& l) { return l.name == "Privateer's Hold"; });
+    REQUIRE(hold != locations->end());
+    CHECK(hold->regionIndex == 17);
+    CHECK(de::formats::regionName(17) == "Daggerfall");
+    CHECK(hold->pixelX() == 109);
+    CHECK(hold->pixelY() == 158);
+}

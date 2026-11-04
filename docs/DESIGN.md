@@ -311,12 +311,51 @@ them in a fixed, deterministic order.
 
 ---
 
+### 6.5 New places and new blocks (milestone 4)
+
+Measured against Bunnyfall's loader (`worldDataReplacement.js`) and a classic location serialised by its own
+`locationToDfuJson` (Privateer's Hold):
+
+- **A new place** is `WorldData/locationnew-bunnyfall-<slug>-<regionIndex>.json`. Bunnyfall adds it to the region at
+  load, after the classic locations, and refuses it if its map id or its name is already the region's.
+  The `bunnyfall-` part is the editor's convention: Bunnyfall marks such places as editor dungeons, so they are never
+  rebuilt smaller (offline settings or online sizes).
+- **Map id** = `(1900 + n) << 20 | pixel`, where `pixel = y * 1000 + x` and `n` is the dungeon's number in the
+  project. Classic high parts go up to 1832, and DFU reads map ids as signed 32-bit, so 1900-2047 (148 dungeons) is the
+  editor's range. `ExteriorData.MapId` is the pixel part alone.
+- **Location ids**: classic ones go up to 51000 and Bunnyfall's arena undercroft is 55398. Editor places take
+  `60000 + 2n` for the exterior and `60001 + 2n` for the dungeon, which names its exterior (`ExteriorLocationId`).
+  The dungeon's id seeds its texture table and random enemies.
+- **Position**: header `X = x * 32768 + 16384`, `Y = (499 - y) * 32768 + 16384` (world units; the map pixel is
+  `X / 32768`, `499 - Y / 32768`); `Longitude = x * 128 + 64`, `Latitude = (499 - y) * 128 + 64`. The pixel must
+  be inside the region, on land, and hold no other location. `Politic` = region + 128.
+- **The PAK maps sit one pixel west of the map table.** Read at `x + 1`, POLITIC.PAK puts 15,248 of the 15,251
+  classic locations in their own region (14,960 at `x`); Bunnyfall's terrain reads CLIMATE.PAK at `x + 1` too. So the
+  editor checks region and water at `x + 1`, and writes the climate of the land there.
+- **Climate**: the world climate of the land at the pixel (CLIMATE.PAK at `x + 1`) with the settings
+  `GetWorldClimateSettings` derives from it (ground, nature and sky archives, people). Bunnyfall reads only `WorldClimate`; the rest is for DFU.
+- **Exterior**: a 1x1 grid naming one classic entrance block, chosen by the designer. Classic dungeons use 136 of them,
+  mostly `DUNGAA00`-`DUNGAA18` and the `RUINAA` ruins.
+- **New blocks** named in the dungeon get indices past BLOCKS.BSA and are fetched as `<NAME>.json`. A patch that
+  rebuilds under the new name counts, so a block started from a classic one ships as a patch (§10.2); one built from
+  empty ships whole. New block names keep the role letter first and are `<letter>BF<5 digits>.RDB`. Each new block
+  takes its own `Position` (the save-identity base) from 40,000,000 up, past BLOCKS.BSA's 32,884,997 bytes.
+
 ## 7. Custom content
 
 ### 7.1 Prefabs (v1)
 
 Pure editor data. On export they turn into ordinary objects, so they need nothing from Bunnyfall. Prefabs can be
 shared between projects as files.
+
+Two kinds:
+- **Furniture and set pieces** dropped into a level as one thing: a bench, a table with chairs and candles, a camp
+  (bedroll, fire, crates), an altar, a shelf of bones. A prefab is any mix of models, flats and lights with their offsets
+  and turns, placed, moved and turned as a group, and broken apart when needed.
+- **Whole blocks** made once and reused across dungeons (milestone 4).
+
+A starter set should ship with the editor, cut from things classic blocks already arrange (furniture props are the
+X / T / M / B description families, §2.4), plus "save selection as prefab".
 
 ### 7.2 Custom enemies (later)
 
@@ -384,14 +423,22 @@ Run before every export. Errors block export; warnings don't.
    Left: seeing it in the game.
    Bunnyfall's ARCH3D byte patches are still unported (they change how a few models draw, not what is exported).
 4. **Block-level authoring.** Dungeon grid, place blocks, port checks, border auto-cap, new-location export.
+   *Status (2026-11-03): done, the in-game walk-in pending.* The project file (`src/project/project.*`: custom blocks
+   and dungeons, every identity number issued once); export to the mod folder (`world_export.*`: checks, new-place
+   JSON, block patches over templates or whole blocks, a manifest so re-exports tidy up); the Project panel with the
+   dungeon grid, doorway ticks, auto caps and the problem list (`src/app/viewer_project.cpp`); the sizing grid in the
+   3D view. Bunnyfall marks `locationnew-bunnyfall-*` places as editor dungeons: never rebuilt smaller (offline or
+   online) and never cloned as spawned dungeons. Checked through Bunnyfall's own loader under Node: the place joins
+   its region, the custom block is served, the dungeon lays out with its start marker, and it stays full size.
 5. **Piece-level authoring.** Snap grid, gizmos, undo/redo, prefabs, entity placement, validation panel.
    *Status (2026-11-03): first part done, ahead of milestone 4.* Editing one classic block in the viewer: placing
    markers, enemies (random and fixed, with type, gender, passive, slot), treasure, scenery and lights on the surface
    under the pointer; selecting, moving (grab, nudge, typed positions), turning models, duplicating, deleting; undo and
    redo; saving as a patch to Bunnyfall's mod folder and reopening it. New objects take save identities from 900000 up
    and keep them. `src/edit/` holds the rules (no UI), `src/app/viewer_edit.cpp` the panels. Not yet: placing
-   architecture pieces, a model palette, prefabs, rotation gizmos, validation, and editing blocks other than classic
-   ones (new blocks come with milestone 4).
+   architecture pieces, a model palette, prefabs (benches and other set pieces, §7.1), rotation gizmos, validation,
+   and editing blocks other than classic ones (new blocks come with milestone 4). The controls need a proper pass:
+   the first version is keyboard-heavy and placement-only.
 6. **Logic graph.** Graph editor and compiler to action chains; door and lock settings.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
 8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).

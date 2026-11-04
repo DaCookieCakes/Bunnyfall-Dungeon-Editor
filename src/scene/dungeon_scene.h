@@ -70,8 +70,8 @@ struct Scene {
     std::vector<LightInstance> lights;
 };
 
-/// Where a scene's blocks come from: the classic block by default, or (say) a saved patch of it.
-using BlockSource = std::function<Result<formats::RdbBlock>(std::size_t bsaIndex)>;
+/// Where a scene's blocks come from, by name: the classic block by default, or a saved patch of it, or a project's own.
+using BlockSource = std::function<Result<formats::RdbBlock>(const std::string& blockName)>;
 
 /// One block on its own at the origin, shown as a starting block (model 70300, the exit door, included).
 Scene blockScene(std::string name, formats::RdbBlock block, std::size_t bsaIndex = kNoBsaIndex);
@@ -80,6 +80,12 @@ Scene blockScene(std::string name, formats::RdbBlock block, std::size_t bsaIndex
 /// the dungeon's classic texture table from its location id and the climate at its map pixel.
 Result<Scene> dungeonScene(const formats::DungeonRecord& dungeon, const formats::BsaArchive& blocks,
                            const formats::PakMap& climate, const BlockSource& source = {});
+
+/// Any dungeon on a block grid: blocks found by `source` (their BLOCKS.BSA record noted when they have one), laid out
+/// as dungeonScene lays them, with the texture table given.
+Result<Scene> assembleDungeon(std::string title, const std::vector<formats::DungeonBlockRef>& cells,
+                              const formats::BsaArchive& blocks, const BlockSource& source, TextureTable textures,
+                              int worldClimate);
 
 /// Rebuilds the scene's models, flats and lights from its blocks (after a block's data changed).
 void rebuildInstances(Scene& scene);

@@ -76,6 +76,23 @@ void main() {
 }
 )";
 
+constexpr const char* kLineVs = R"(#version 330 core
+layout(location = 0) in vec3 aPosition;
+layout(location = 1) in vec4 aColour;
+uniform mat4 uViewProj;
+out vec4 vColour;
+void main() {
+    vColour = aColour;
+    gl_Position = uViewProj * vec4(aPosition, 1.0);
+}
+)";
+
+constexpr const char* kLineFs = R"(#version 330 core
+in vec4 vColour;
+out vec4 fragColour;
+void main() { fragColour = vColour; }
+)";
+
 constexpr float kSelectionTint[4] = {1.0f, 0.75f, 0.1f, 0.45f};
 constexpr float kNoTint[4] = {0, 0, 0, 0};
 
@@ -91,6 +108,18 @@ Result<Renderer> Renderer::create(TextureCache& textures, ModelCache& models) {
     if (!billboard) return fail("billboard shader: " + billboard.error().message);
     r.modelShader_ = std::move(*model);
     r.billboardShader_ = std::move(*billboard);
+    auto line = ShaderProgram::build(kLineVs, kLineFs);
+    if (!line) return fail("line shader: " + line.error().message);
+    r.lineShader_ = std::move(*line);
+    glGenVertexArrays(1, &r.lineVao_);
+    glGenBuffers(1, &r.lineVbo_);
+    glBindVertexArray(r.lineVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, r.lineVbo_);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 7 * sizeof(float), reinterpret_cast<void*>(3 * sizeof(float)));
+    glBindVertexArray(0);
 
     const float corners[] = {-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f};
     glGenVertexArrays(1, &r.quadVao_);
@@ -127,12 +156,38 @@ Result<Renderer> Renderer::create(TextureCache& textures, ModelCache& models) {
 Renderer::Renderer(Renderer&& o) noexcept
     : textures_(o.textures_), models_(o.models_), modelShader_(std::move(o.modelShader_)),
       billboardShader_(std::move(o.billboardShader_)), quadVao_(std::exchange(o.quadVao_, 0)),
-      quadVbo_(std::exchange(o.quadVbo_, 0)), lightIcon_(std::exchange(o.lightIcon_, 0)) {}
+      quadVbo_(std::exchange(o.quadVbo_, 0)), lightIcon_(std::exchange(o.lightIcon_, 0)),
+      lineShader_(std::move(o.lineShader_)), lineVao_(std::exchange(o.lineVao_, 0)), lineVbo_(std::exchange(o.lineVbo_, 0)) {}
 
 Renderer::~Renderer() {
     if (quadVao_) glDeleteVertexArrays(1, &quadVao_);
     if (quadVbo_) glDeleteBuffers(1, &quadVbo_);
     if (lightIcon_) glDeleteTextures(1, &lightIcon_);
+    if (lineVao_) glDeleteVertexArrays(1, &lineVao_);
+    if (lineVbo_) glDeleteBuffers(1, &lineVbo_);
+}
+
+void Renderer::drawLines(const std::vector<scene::GridLine>& lines, const Mat4& viewProj, bool onTop) {
+    if (lines.empty()) return;
+    std::vector<float> data;
+    data.reserve(lines.size() * 14);
+    for (const auto& l : lines) {
+        for (const auto& p : {l.a, l.b}) {
+            data.insert(data.end(), {float(p.x), float(p.y), float(p.z), l.colour[0], l.colour[1], l.colour[2], l.colour[3]});
+        }
+    }
+    lineShader_.use();
+    glUniformMatrix4fv(lineShader_.uniform("uViewProj"), 1, GL_FALSE, viewProj.data());
+    glBindVertexArray(lineVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_STREAM_DRAW);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (onTop) glDisable(GL_DEPTH_TEST);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lines.size() * 2));
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glBindVertexArray(0);
 }
 
 void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, int height, const DrawOptions& options,
@@ -216,6 +271,7 @@ void Renderer::draw(const scene::Scene& scene, const Camera& camera, int width, 
         }
     }
     glBindVertexArray(0);
+    if (options.grid) drawLines(scene::gridLines(scene, options.gridOptions), viewProj, options.gridOnTop);
 }
 
 } // namespace de::render

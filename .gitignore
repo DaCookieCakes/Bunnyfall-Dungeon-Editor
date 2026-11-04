@@ -2,3 +2,4 @@ build/
 *.pkl
 __pycache__/
 imgui.ini
+projects/

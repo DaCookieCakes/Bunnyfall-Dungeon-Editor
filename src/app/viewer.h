@@ -6,6 +6,8 @@
 #include "export/patch_folder.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
+#include "project/project.h"
+#include "project/world_export.h"
 #include "render/renderer.h"
 
 #include <SDL3/SDL.h>
@@ -26,6 +28,13 @@ public:
 
     /// Where edited blocks are saved as patches, and read from (Bunnyfall's vendor/<mod>/WorldDataPatches).
     void setPatchFolder(std::filesystem::path dir) { patches_.emplace(std::move(dir)); }
+    /// The mod folder a project exports to (Bunnyfall's vendor/<mod>/); its WorldDataPatches is the patch folder.
+    void setModFolder(std::filesystem::path dir);
+    /// The project file: loaded if it exists, else a new project saved there on first save.
+    Result<void> setProjectFile(std::filesystem::path file);
+    [[nodiscard]] project::Project& project() { return project_; }
+    /// Show one of the project's dungeons (by number) in the 3D view.
+    Result<void> openProjectDungeon(int number);
 
     /// Show a classic dungeon (index into dungeons()) or a single block. Blocks with a saved patch show patched.
     Result<void> openDungeon(std::size_t index);
@@ -53,13 +62,19 @@ public:
 
     [[nodiscard]] const std::vector<formats::DungeonRecord>& dungeons() const { return dungeons_; }
     render::Camera& camera() { return camera_; }
+    /// Turn the sizing grid on, at the floor below the camera (or `height` when given).
+    void showGrid(std::optional<double> height = std::nullopt);
     /// Everything the texture and model caches could not load so far.
     [[nodiscard]] std::vector<std::string> problems() const;
-    /// Unsaved edits (the window asks before closing on them).
-    [[nodiscard]] bool hasUnsavedEdits() const { return edit_ && edit_->dirty(); }
+    /// Unsaved edits (the window asks before closing on them): a block, or the project.
+    [[nodiscard]] bool hasUnsavedEdits() const { return (edit_ && edit_->dirty()) || projectDirty_; }
     /// The window was asked to close: closes at once with nothing unsaved, else asks first (wantsQuit says when).
     void requestQuit();
     [[nodiscard]] bool wantsQuit() const { return quit_; }
+
+    /// A scripted run of the project tools (--check-project): a new dungeon on free land, a custom block copied from a
+    /// classic one, caps all round, checked and exported to `modDir`. Answers a line per step.
+    Result<std::string> checkProject(const std::filesystem::path& modDir);
 
     /// A scripted run of the edit tools, as clicks would drive them (--check-edit): edits the starting block, places
     /// one of every kind on the surface ahead, moves one, undoes and redoes, saves to `patchDir`, reloads the patch and
@@ -82,6 +97,10 @@ private:
     void drawBrowser();
     void drawInspector();
     void drawViewPanel();
+    /// Editor Y of the floor straight below a point, if there is one.
+    [[nodiscard]] std::optional<double> floorBelow(catalog::Vec3 point);
+    /// Editor Y of the selected object's base (a flat's or a light's bottom, a model's origin).
+    [[nodiscard]] std::optional<double> selectedBase();
 
     // ---- editing (viewer_edit.cpp) ----
     /// Start editing the block `sceneBlock` of the scene (its saved patch, if any, is where editing starts).
@@ -109,6 +128,25 @@ private:
     void drawEditPanel();
     void drawEditInspector(edit::ObjectSlot slot);
     void drawConfirmations();
+
+    // ---- the project (viewer_project.cpp) ----
+    void drawProjectPanel();
+    void drawDungeonSettings(project::ProjectDungeon& dungeon);
+    void drawGrid(project::ProjectDungeon& dungeon);
+    void drawProjectBlocks();
+    void saveProject();
+    void exportProject();
+    void markProjectChanged() { projectDirty_ = true; }
+    /// Every empty side of a non-cap block gets a classic border cap.
+    int addCaps(project::ProjectDungeon& dungeon);
+    [[nodiscard]] std::optional<std::pair<int, int>> freePixel(int region, int nearX, int nearY) const;
+    [[nodiscard]] bool isProjectBlock(const std::string& name) const { return project_.block(name) != nullptr; }
+    Result<void> openProjectBlock(const std::string& name);
+    /// What a block (classic or the project's) is used by: dungeons in the world and in the project.
+    [[nodiscard]] std::pair<std::ptrdiff_t, std::ptrdiff_t> usersOf(const std::string& name) const;
+    /// Open the project dungeon and start editing the block at a grid cell, the camera over it.
+    void editCell(int dungeonNumber, int x, int z);
+    void refreshIssues();
     /// Puts the scene's copies of the edited block back to what is saved, and stops editing.
     void discardEdit();
     [[nodiscard]] std::pair<double, double> entitySize(const formats::RdbObject& obj);
@@ -129,6 +167,24 @@ private:
     std::optional<scene::ObjectRef> selected_;   // what is selected, by where it lives in the blocks
     double selectedDistance_ = 0;
     std::string status_;
+
+    // the project
+    project::Project project_;
+    std::filesystem::path projectFile_;
+    std::optional<std::filesystem::path> modDir_;
+    bool projectDirty_ = false;
+    std::unique_ptr<project::World> world_;
+    int currentDungeon_ = -1;                    // the project dungeon the panel shows
+    std::string gridBlock_ = "N0000071.RDB";     // what a click on an empty grid cell puts there
+    char gridFilter_[32] = {};
+    char newBlockTemplate_[16] = "N0000071";
+    char newBlockLabel_[64] = "";
+    int newBlockRole_ = 0;                       // index into "NWSMB"
+    std::vector<project::Issue> issues_;
+    bool issuesStale_ = true;
+    std::optional<std::pair<int, int>> gridMenuCell_;   // the cell a right-click menu is open on
+    std::vector<std::string> entranceBlocks_;           // surface blocks a dungeon can be entered by (filled once)
+    bool confirmDeleteDungeon_ = false;
 
     // editing
     std::optional<edit::BlockEdit> edit_;

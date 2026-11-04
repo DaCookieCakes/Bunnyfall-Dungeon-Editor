@@ -47,12 +47,34 @@ Saving writes the block as a patch into the patch folder: `--patches DIR`, by de
 on where it stopped; a block edited back to the original has its patch removed. A classic block is shared: the Edit
 panel says how many dungeons show the change.
 
+### Making your own dungeons
+
+The **Project** panel holds your own dungeons and blocks, saved in `projects/bunnyfall-dungeons.project.json`
+(`--project FILE` for another). Nothing there touches Daggerfall's own dungeons.
+
+- **Blocks** tab: make a block as a copy of a classic one (`N0000071`) or from nothing, with a role (normal, wet, quest,
+  mausoleum, border cap) and a label. **Open** shows it alone; **Edit this block** in the Inspector edits it as
+  above, and saving it goes into the project.
+- **Dungeons** tab: **New dungeon**, then its place: name, region, map pixel (**Free spot nearby** finds empty land),
+  dungeon type (which enemies and loot), map icon, entrance block, and whether it shows on the travel map.
+- The grid: pick a block in **Place** and click empty cells (north is up). Right-click a cell to make it the start,
+  replace it, remove it, or edit it in 3D. **Auto caps** closes every open side with border caps. Each edge shows
+  its two doorways (green upper, orange lower); red means the neighbour's side does not match. Problems are listed
+  under the grid; errors stop an export, warnings do not.
+- **View in 3D** shows the dungeon; **Export to Bunnyfall** writes it into the mod folder (`--mod DIR`, by default
+  `../Bunnyfall/vendor/bunnyfall-dungeons`): blocks copied from classic ones as patches, blocks made from nothing
+  whole, each dungeon as a new place. A re-export removes the files of deleted dungeons and blocks.
+
+The sizing grid (View panel, **Grid**) shows block edges, 128-unit room cells and the doorway sockets, at a height
+you set (or the floor below you, or the selection's level).
+
 ### Checks without a screen
 
 `--screenshot out.png [--size WxH] [--top] [--camera x,y,z,yaw,pitch] [--ui]` draws one frame offscreen (with the
 panels, with `--ui`) and exits; `--frames N` runs the whole app hidden for N frames; `--check-edit DIR` runs the edit
-tools as clicks would (places one of everything ahead, moves, undoes, saves to DIR and reloads), and combines with
-`--screenshot`.
+tools as clicks would (places one of everything ahead, moves, undoes, saves to DIR and reloads); `--check-project
+DIR` makes a block and a dungeon, caps it, opens it and exports to DIR. Both combine with `--screenshot`, and `--grid`
+shows the sizing grid.
 
 ## dftool
 

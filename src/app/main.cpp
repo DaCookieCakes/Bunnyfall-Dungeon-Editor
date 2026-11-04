@@ -2,12 +2,14 @@
 //
 //   dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME]
 //                  [--screenshot OUT.png [--size WxH] [--top] [--camera x,y,z,yawDeg,pitchDeg]]
-//                  [--frames N] [--patches DIR]
+//                  [--frames N] [--mod DIR] [--patches DIR] [--project FILE]
 //
 // ARENA2 comes from --arena2, else DE_ARENA2, else ../DFData/ARENA2. With --screenshot the view is drawn once,
 // offscreen, saved and the program exits. --frames N runs the normal loop, panels and all, in a hidden window for N
-// frames and exits: a smoke test of the whole application without showing anything. --patches is where edited blocks
-// are saved (default: ../Bunnyfall/vendor/bunnyfall-dungeons/WorldDataPatches, when ../Bunnyfall/vendor exists).
+// frames and exits: a smoke test of the whole application without showing anything.
+// --mod is the mod folder the project exports to (default: ../Bunnyfall/vendor/bunnyfall-dungeons, when
+// ../Bunnyfall/vendor exists); edited classic blocks are saved in its WorldDataPatches (or --patches). --project is the
+// project file (default: projects/bunnyfall-dungeons.project.json).
 
 #include "app/viewer.h"
 #include "core/png.h"
@@ -37,8 +39,12 @@ struct Options {
     std::vector<double> camera;
     int frames = 0;   // > 0: run this many frames hidden, then exit
     std::string patches;
-    std::string checkEdit;
-    bool ui = false;          // draw the panels into the screenshot too   // a folder: run the scripted edit check, saving its patch there
+    std::string checkEdit;      // a folder: run the scripted edit check, saving its patch there
+    std::string checkProject;   // a folder: run the scripted project check, exporting there
+    std::string mod;
+    std::string project = "projects/bunnyfall-dungeons.project.json";
+    bool ui = false;            // draw the panels into the screenshot too
+    bool grid = false;          // show the sizing grid
 };
 
 bool parse(int argc, char** argv, Options& o) {
@@ -53,9 +59,13 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--size" && (v = next())) std::sscanf(v, "%dx%d", &o.width, &o.height);
         else if (a == "--top") o.top = true;
         else if (a == "--ui") o.ui = true;
+        else if (a == "--grid") o.grid = true;
         else if (a == "--frames" && (v = next())) o.frames = std::atoi(v);
         else if (a == "--patches" && (v = next())) o.patches = v;
         else if (a == "--check-edit" && (v = next())) o.checkEdit = v;
+        else if (a == "--check-project" && (v = next())) o.checkProject = v;
+        else if (a == "--mod" && (v = next())) o.mod = v;
+        else if (a == "--project" && (v = next())) o.project = v;
         else if (a == "--camera" && (v = next())) {
             double x, y, z, yaw, pitch;
             if (std::sscanf(v, "%lf,%lf,%lf,%lf,%lf", &x, &y, &z, &yaw, &pitch) != 5) return false;
@@ -127,7 +137,8 @@ int main(int argc, char** argv) {
     if (!parse(argc, argv, o)) {
             std::println(stderr, "usage: dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME] "
                              "[--screenshot OUT.png [--size WxH] [--top] [--camera x,y,z,yawDeg,pitchDeg]] "
-                             "[--frames N] [--patches DIR] [--check-edit DIR] [--ui]");
+                             "[--frames N] [--mod DIR] [--patches DIR] [--project FILE] [--check-edit DIR] "
+                             "[--check-project DIR] [--ui] [--grid]");
         return 2;
     }
     auto arena2 = de::formats::Arena2::open(o.arena2);
@@ -139,7 +150,7 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    const bool offscreen = !o.screenshot.empty() || o.frames > 0 || !o.checkEdit.empty();
+    const bool offscreen = !o.screenshot.empty() || o.frames > 0 || !o.checkEdit.empty() || !o.checkProject.empty();
     SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (offscreen) flags |= SDL_WINDOW_HIDDEN;
     SDL_Window* window = SDL_CreateWindow("Bunnyfall Dungeon Editor", o.width, o.height, flags);
@@ -162,13 +173,16 @@ int main(int argc, char** argv) {
         auto viewer = de::app::Viewer::create(*arena2);
         if (!viewer) return fatal(viewer.error().message);
         auto& v = **viewer;
-        std::string patches = o.patches;
-        if (patches.empty() && std::filesystem::is_directory("../Bunnyfall/vendor")) {
-            patches = "../Bunnyfall/vendor/bunnyfall-dungeons/WorldDataPatches";
+        std::string mod = o.mod;
+        if (mod.empty() && std::filesystem::is_directory("../Bunnyfall/vendor")) mod = "../Bunnyfall/vendor/bunnyfall-dungeons";
+        if (!mod.empty()) v.setModFolder(std::filesystem::absolute(mod).lexically_normal());
+        if (!o.patches.empty()) v.setPatchFolder(std::filesystem::absolute(o.patches).lexically_normal());
+        if (auto r = v.setProjectFile(std::filesystem::absolute(o.project).lexically_normal()); !r) {
+            return fatal("project: " + r.error().message);
         }
-        if (!patches.empty()) {
-            v.setPatchFolder(std::filesystem::absolute(patches).lexically_normal());
-            if (!offscreen) std::println("patches: {}", std::filesystem::absolute(patches).lexically_normal().string());
+        if (!offscreen) {
+            std::println("mod folder: {}", mod.empty() ? "(none)" : std::filesystem::absolute(mod).lexically_normal().string());
+            std::println("project: {}", std::filesystem::absolute(o.project).lexically_normal().string());
         }
 
         de::Result<void> opened{};
@@ -188,6 +202,13 @@ int main(int argc, char** argv) {
             c.pitch = o.camera[4] * std::numbers::pi / 180;
         }
 
+        if (o.grid) v.showGrid();
+        if (!o.checkProject.empty()) {
+            v.setViewSize(o.width, o.height);
+            auto log = v.checkProject(o.checkProject);
+            if (!log) return fatal("project check: " + log.error().message);
+            std::print("{}", *log);
+        }
         if (!o.checkEdit.empty()) {
             v.setViewSize(o.width, o.height);
             auto log = v.checkEdit(o.checkEdit);
@@ -196,7 +217,7 @@ int main(int argc, char** argv) {
         }
         if (!o.screenshot.empty()) {
             status = screenshot(v, o);
-        } else if (o.checkEdit.empty()) {
+        } else if (o.checkEdit.empty() && o.checkProject.empty()) {
             int frame = 0;
             Uint64 last = SDL_GetTicksNS();
             while (!v.wantsQuit() && (o.frames <= 0 || frame++ < o.frames)) {

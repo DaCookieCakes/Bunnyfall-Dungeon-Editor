@@ -54,7 +54,47 @@ RegionLocations readRegionLocations(const BsaArchive& maps, std::size_t region) 
     return out;
 }
 
+constexpr std::array<std::string_view, 62> kRegionNames = {
+    "Alik'r Desert", "Dragontail Mountains", "Glenpoint Foothills", "Daggerfall Bluffs", "Yeorth Burrowland",
+    "Dwynnen", "Ravennian Forest", "Devilrock", "Malekna Forest", "Isle of Balfiera", "Bantha", "Dak'fron",
+    "Islands in the Western Iliac Bay", "Tamarilyn Point", "Lainlyn Cliffs", "Bjoulsae River", "Wrothgarian Mountains",
+    "Daggerfall", "Glenpoint", "Betony", "Sentinel", "Anticlere", "Lainlyn", "Wayrest", "Gen Tem High Rock village",
+    "Gen Rai Hammerfell village", "Orsinium Area", "Skeffington Wood", "Hammerfell bay coast", "Hammerfell sea coast",
+    "High Rock bay coast", "High Rock sea coast", "Northmoor", "Menevia", "Alcaire", "Koegria", "Bhoriane", "Kambria",
+    "Phrygias", "Urvaius", "Ykalon", "Daenia", "Shalgora", "Abibon-Gora", "Kairou", "Pothago", "Myrkwasa", "Ayasofya",
+    "Tigonus", "Kozanset", "Satakalaam", "Totambu", "Mournoth", "Ephesus", "Santaki", "Antiphyllos", "Bergama",
+    "Gavaudon", "Tulune", "Glenumbra Moors", "Ilessan Hills", "Cybiades",
+};
+
 } // namespace
+
+std::string_view regionName(int regionIndex) {
+    if (regionIndex < 0 || regionIndex >= kRegionCount) return "";
+    return kRegionNames[static_cast<std::size_t>(regionIndex)];
+}
+
+Result<std::vector<LocationSummary>> readLocations(const BsaArchive& maps) {
+    std::vector<LocationSummary> out;
+    const auto regionCount = maps.count() / kRecordsPerRegion;
+    for (std::size_t region = 0; region < regionCount; ++region) {
+        try {
+            const auto names = maps.record(region * kRecordsPerRegion + kNamesRecordInRegion);
+            if (names.size() < 4) continue;
+            const auto locations = readRegionLocations(maps, region);
+            for (std::size_t i = 0; i < locations.table.size(); ++i) {
+                LocationSummary s;
+                s.regionIndex = static_cast<int>(region);
+                s.locationIndex = static_cast<int>(i);
+                s.name = names.fixedString(4 + i * 32, 32);
+                s.map = locations.table[i];
+                out.push_back(std::move(s));
+            }
+        } catch (const OutOfBounds& e) {
+            return fail("region " + std::to_string(region) + " locations truncated: " + e.what());
+        }
+    }
+    return out;
+}
 
 Result<std::string> dungeonBlockName(std::uint16_t bitfield) {
     const auto letter = static_cast<std::size_t>(bitfield >> 11);

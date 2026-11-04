@@ -68,7 +68,11 @@ Result<std::unique_ptr<Viewer>> Viewer::create(const formats::Arena2& arena2) {
     auto palette = formats::Palette::load(*palettePath);
     if (!palette) return std::unexpected(palette.error());
 
+    auto locations = formats::readLocations(arena2.maps);
+    if (!locations) return std::unexpected(locations.error());
+
     std::unique_ptr<Viewer> v(new Viewer(arena2, std::move(*catalog), std::move(*dungeons), *palette));
+    v->world_ = std::make_unique<project::World>(project::World{arena2, v->catalog_, std::move(*locations)});
     auto renderer = render::Renderer::create(v->textures_, v->models_);
     if (!renderer) return std::unexpected(renderer.error());
     v->renderer_.emplace(std::move(*renderer));
@@ -99,19 +103,22 @@ void Viewer::setScene(scene::Scene scene) {
 }
 
 scene::BlockSource Viewer::blockSource() const {
-    return [this](std::size_t bsaIndex) -> Result<formats::RdbBlock> {
-        if (patches_) {
-            auto patched = patches_->load(arena2_.blocks, bsaIndex);
+    return [this](const std::string& name) -> Result<formats::RdbBlock> {
+        if (const auto* own = project_.block(name)) return own->data;   // the project's own block
+        const auto bsaIndex = arena2_.blocks.findByName(name);
+        if (!bsaIndex) return fail("no block " + name);
+        if (patches_) {   // a classic block with a saved patch
+            auto patched = patches_->load(arena2_.blocks, *bsaIndex);
             if (!patched) return std::unexpected(patched.error());
             if (*patched) return std::move(**patched);
         }
-        return formats::readClassicRdbBlock(arena2_.blocks, bsaIndex);
+        return formats::readClassicRdbBlock(arena2_.blocks, *bsaIndex);
     };
 }
 
 Result<void> Viewer::openDungeon(std::size_t index) {
     if (index >= dungeons_.size()) return fail("no dungeon " + std::to_string(index));
-    if (hasUnsavedEdits()) return fail("Save or discard the edits to " + edit_->name() + " first.");
+    if (edit_ && edit_->dirty()) return fail("Save or discard the edits to " + edit_->name() + " first.");
     auto scene = scene::dungeonScene(dungeons_[index], arena2_.blocks, arena2_.climate, blockSource());
     if (!scene) return std::unexpected(scene.error());
     setScene(std::move(*scene));
@@ -124,10 +131,11 @@ Result<void> Viewer::openDungeon(std::size_t index) {
 
 Result<void> Viewer::openBlock(const std::string& name) {
     const auto full = name.ends_with(".RDB") ? name : name + ".RDB";
+    if (isProjectBlock(full)) return openProjectBlock(full);
     const auto index = arena2_.blocks.findByName(full);
     if (!index) return fail("no block " + full);
-    if (hasUnsavedEdits()) return fail("Save or discard the edits to " + edit_->name() + " first.");
-    auto block = blockSource()(*index);
+    if (edit_ && edit_->dirty()) return fail("Save or discard the edits to " + edit_->name() + " first.");
+    auto block = blockSource()(full);
     if (!block) return std::unexpected(block.error());
     setScene(scene::blockScene(full, std::move(*block), *index));
     status_ = std::format("{}: {} models, {} flats", full, scene_.models.size(), scene_.flats.size());
@@ -302,6 +310,7 @@ void Viewer::drawUi() {
     drawInspector();
     drawViewPanel();
     drawEditPanel();
+    drawProjectPanel();
 }
 
 void Viewer::drawBrowser() {
@@ -421,12 +430,44 @@ void Viewer::drawInspector() {
     } else if (const auto* l = obj.light()) {
         ImGui::Text("light, radius %u", l->radius);
     }
-    if (block.bsaIndex != scene::kNoBsaIndex) {
+    if (block.bsaIndex != scene::kNoBsaIndex || isProjectBlock(block.name)) {
         ImGui::Separator();
         if (ImGui::Button("Edit this block")) beginEdit(ref.block);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add, move and change things in %s", block.name.c_str());
     }
     ImGui::End();
+}
+
+std::optional<double> Viewer::floorBelow(catalog::Vec3 point) {
+    const scene::MeshLookup meshes = [this](std::uint32_t id) -> const geometry::ModelMesh* {
+        const auto* m = models_.get(id);
+        return m ? &m->mesh : nullptr;
+    };
+    const scene::FlatSizeLookup sizes = [this](int a, int r) { return textures_.flatSize(a, r); };
+    const auto hit = scene::pick(scene_, {point, {0, -1, 0}}, meshes, sizes,
+                                 {.flats = false, .markers = false, .models = true, .ignore = std::nullopt, .lightSize = 0});
+    if (!hit) return std::nullopt;
+    return point.y - hit->distance;
+}
+
+void Viewer::showGrid(std::optional<double> height) {
+    drawOptions_.grid = true;
+    if (!height) height = floorBelow(camera_.position);
+    if (height) drawOptions_.gridOptions.height = *height;
+}
+
+std::optional<double> Viewer::selectedBase() {
+    const auto hit = selectionHit();
+    if (!hit) return std::nullopt;
+    switch (hit->kind) {
+        case scene::Hit::Kind::Model: return scene_.models[hit->index].transform.translation.y;
+        case scene::Hit::Kind::Flat: {
+            const auto& f = scene_.flats[hit->index];
+            return f.position.y - textures_.flatSize(f.archive, f.record).second / 2;
+        }
+        case scene::Hit::Kind::Light: return scene_.lights[hit->index].position.y - render::kLightGizmoSize / 2;
+    }
+    return std::nullopt;
 }
 
 void Viewer::drawViewPanel() {
@@ -445,6 +486,39 @@ void Viewer::drawViewPanel() {
     ImGui::Checkbox("Cull back faces", &drawOptions_.cullBackFaces);
     ImGui::SameLine();
     ImGui::Checkbox("Wireframe", &drawOptions_.wireframe);
+    if (ImGui::Checkbox("Grid", &drawOptions_.grid) && drawOptions_.grid) {
+        if (const auto y = floorBelow(camera_.position)) drawOptions_.gridOptions.height = *y;
+    }
+    if (drawOptions_.grid) {
+        ImGui::SameLine();
+        ImGui::Checkbox("through walls", &drawOptions_.gridOnTop);
+        ImGui::SameLine();
+        ImGui::Checkbox("sockets", &drawOptions_.gridOptions.sockets);
+        int stepIndex = drawOptions_.gridOptions.cellStep == 0     ? 0
+                        : drawOptions_.gridOptions.cellStep == 64  ? 1
+                        : drawOptions_.gridOptions.cellStep == 128 ? 2
+                                                                   : 3;
+        const char* steps[] = {"blocks only", "64", "128", "256"};
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::Combo("cells", &stepIndex, steps, 4)) {
+            constexpr int values[] = {0, 64, 128, 256};
+            drawOptions_.gridOptions.cellStep = values[stepIndex];
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("128 units is one room cell (3.2 m); a block is 2048 (16 cells).");
+        float height = float(drawOptions_.gridOptions.height);
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::DragFloat("height", &height, 4.0f)) drawOptions_.gridOptions.height = height;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("floor below")) {
+            if (const auto y = floorBelow(camera_.position)) drawOptions_.gridOptions.height = *y;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!selected_);
+        if (ImGui::SmallButton("selection")) {
+            if (const auto y = selectedBase()) drawOptions_.gridOptions.height = *y;
+        }
+        ImGui::EndDisabled();
+    }
     if (ImGui::Button("Start")) cameraToStart();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where a new game puts the player (the enter marker, else the start marker)");
     ImGui::SameLine();

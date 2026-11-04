@@ -62,23 +62,34 @@ Scene blockScene(std::string name, formats::RdbBlock block, std::size_t bsaIndex
     return scene;
 }
 
-Result<Scene> dungeonScene(const formats::DungeonRecord& dungeon, const formats::BsaArchive& blocks,
-                           const formats::PakMap& climate, const BlockSource& source) {
+Result<Scene> assembleDungeon(std::string title, const std::vector<formats::DungeonBlockRef>& cells,
+                              const formats::BsaArchive& blocks, const BlockSource& source, TextureTable textures,
+                              int worldClimate) {
     Scene scene;
-    scene.title = dungeon.name;
-    const auto [px, py] = formats::mapPixel(dungeon.map.longitude, dungeon.map.latitude);
-    scene.worldClimate = climate.at(px, py);
-    scene.textures = TextureTable::classic(dungeon.locationId, scene.worldClimate);
-    for (const auto& ref : dungeon.blocks) {
+    scene.title = std::move(title);
+    scene.worldClimate = worldClimate;
+    scene.textures = textures;
+    for (const auto& ref : cells) {
         const auto index = blocks.findByName(ref.blockName);
-        if (!index) return fail(dungeon.name + ": block " + ref.blockName + " not in BLOCKS.BSA");
-        auto data = source ? source(*index) : formats::readClassicRdbBlock(blocks, *index);
+        Result<formats::RdbBlock> data = fail("");
+        if (source) data = source(ref.blockName);
+        else if (index) data = formats::readClassicRdbBlock(blocks, *index);
+        else data = fail(scene.title + ": block " + ref.blockName + " not in BLOCKS.BSA");
         if (!data) return std::unexpected(data.error());
         const catalog::Vec3 origin{double(ref.x) * catalog::kRdbBlockSide, 0, double(ref.z) * catalog::kRdbBlockSide};
-        scene.blocks.push_back(SceneBlock{ref.blockName, *index, origin, ref.isStartingBlock, std::move(*data)});
+        scene.blocks.push_back(SceneBlock{ref.blockName, index.value_or(kNoBsaIndex), origin, ref.isStartingBlock,
+                                          std::move(*data)});
     }
     rebuildInstances(scene);
     return scene;
+}
+
+Result<Scene> dungeonScene(const formats::DungeonRecord& dungeon, const formats::BsaArchive& blocks,
+                           const formats::PakMap& climate, const BlockSource& source) {
+    const auto [px, py] = formats::mapPixel(dungeon.map.longitude, dungeon.map.latitude);
+    const int worldClimate = climate.at(px, py);
+    return assembleDungeon(dungeon.name, dungeon.blocks, blocks, source,
+                           TextureTable::classic(dungeon.locationId, worldClimate), worldClimate);
 }
 
 } // namespace de::scene

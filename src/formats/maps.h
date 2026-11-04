@@ -40,6 +40,23 @@ struct DungeonRecord {
 /// one layout fix-up classic Daggerfall makes (Orsinium's overlapping border block).
 Result<std::vector<DungeonRecord>> readDungeons(const BsaArchive& maps);
 
+/// One classic location: enough to keep a new place from clashing with it.
+struct LocationSummary {
+    int regionIndex = 0;
+    int locationIndex = 0;
+    std::string name;
+    MapTableEntry map;
+    [[nodiscard]] int pixelX() const { return map.longitude / 128; }
+    [[nodiscard]] int pixelY() const { return 499 - map.latitude / 128; }
+};
+
+/// Every classic location in MAPS.BSA, region by region.
+Result<std::vector<LocationSummary>> readLocations(const BsaArchive& maps);
+
+/// Daggerfall's 62 region names, by region index.
+std::string_view regionName(int regionIndex);
+inline constexpr int kRegionCount = 62;
+
 /// The name a dungeon block bitfield encodes, or an error for a letter index outside N W L S B M.
 Result<std::string> dungeonBlockName(std::uint16_t bitfield);
 

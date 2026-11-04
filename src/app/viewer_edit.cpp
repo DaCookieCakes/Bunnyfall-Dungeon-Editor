@@ -34,21 +34,38 @@ void textureImage(const render::GpuTexture& t, float side) {
 
 void Viewer::beginEdit(std::size_t sceneBlock) {
     const auto& block = scene_.blocks[sceneBlock];
-    if (edit_ && edit_->bsaIndex() == block.bsaIndex) {
+    if (edit_ && edit_->name() == block.name) {
         editBlock_ = sceneBlock;
         return;
     }
-    if (hasUnsavedEdits()) {
+    if (edit_ && edit_->dirty()) {
         status_ = "Save or discard the edits to " + edit_->name() + " first.";
         return;
     }
-    auto classic = formats::readClassicRdbBlock(arena2_.blocks, block.bsaIndex);
-    if (!classic) {
-        status_ = classic.error().message;
-        return;
+    if (const auto* own = project_.block(block.name)) {
+        // The project's own block: "original" is its template as the game has it, or empty.
+        formats::RdbBlock original = project::emptyBlock();
+        if (own->templateName) {
+            const auto index = arena2_.blocks.findByName(*own->templateName);
+            auto classic = index ? formats::readClassicRdbBlock(arena2_.blocks, *index)
+                                 : Result<formats::RdbBlock>(fail("no template " + *own->templateName));
+            if (!classic) {
+                status_ = classic.error().message;
+                return;
+            }
+            original = std::move(*classic);
+        }
+        edit_.emplace(block.name, scene::kNoBsaIndex, own->savePosition, std::move(original), block.data);
+    } else {
+        if (block.bsaIndex == scene::kNoBsaIndex) return;
+        auto classic = formats::readClassicRdbBlock(arena2_.blocks, block.bsaIndex);
+        if (!classic) {
+            status_ = classic.error().message;
+            return;
+        }
+        edit_.emplace(block.name, block.bsaIndex, arena2_.blocks.entry(block.bsaIndex).offset, std::move(*classic),
+                      block.data);
     }
-    edit_.emplace(block.name, block.bsaIndex, arena2_.blocks.entry(block.bsaIndex).offset, std::move(*classic),
-                  block.data);
     editBlock_ = sceneBlock;
     status_ = "Editing " + block.name + ".";
 }
@@ -62,16 +79,15 @@ void Viewer::endEdit() {
 
 void Viewer::discardEdit() {
     if (!edit_) return;
-    const auto bsa = edit_->bsaIndex();
     const auto name = edit_->name();
     endEdit();
-    auto saved = blockSource()(bsa);
+    auto saved = blockSource()(name);
     if (!saved) {
         status_ = saved.error().message;
         return;
     }
     for (auto& b : scene_.blocks) {
-        if (b.bsaIndex == bsa) b.data = *saved;
+        if (b.name == name) b.data = *saved;
     }
     scene::rebuildInstances(scene_);
     selected_.reset();
@@ -80,14 +96,22 @@ void Viewer::discardEdit() {
 
 void Viewer::editChanged() {
     for (auto& b : scene_.blocks) {
-        if (b.bsaIndex == edit_->bsaIndex()) b.data = edit_->block();
+        if (b.name == edit_->name()) b.data = edit_->block();
     }
+    issuesStale_ = true;   // doorways may have changed
     scene::rebuildInstances(scene_);
     if (selected_ && editing(*selected_) && !edit_->object(*selectedSlot())) selected_.reset();
 }
 
 void Viewer::saveEdit() {
     if (!edit_) return;
+    if (auto* own = project_.block(edit_->name())) {
+        own->data = edit_->block();
+        edit_->markSaved();
+        markProjectChanged();
+        saveProject();
+        return;
+    }
     if (!patches_) {
         status_ = "No patch folder: start the editor with --patches <folder>.";
         return;
@@ -110,7 +134,7 @@ void Viewer::requestQuit() {
 }
 
 bool Viewer::editing(const scene::ObjectRef& ref) const {
-    return edit_ && ref.block < scene_.blocks.size() && scene_.blocks[ref.block].bsaIndex == edit_->bsaIndex();
+    return edit_ && ref.block < scene_.blocks.size() && scene_.blocks[ref.block].name == edit_->name();
 }
 
 std::optional<edit::ObjectSlot> Viewer::selectedSlot() const {
@@ -150,7 +174,7 @@ void Viewer::placeAt(double x, double y) {
         status_ = "Nothing there to place on.";
         return;
     }
-    if (scene_.blocks[s->sceneBlock].bsaIndex != edit_->bsaIndex()) {
+    if (scene_.blocks[s->sceneBlock].name != edit_->name()) {
         status_ = "That is in " + scene_.blocks[s->sceneBlock].name + "; you are editing " + edit_->name() + ".";
         return;
     }
@@ -348,7 +372,7 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     // Save, read back through the same path the viewer opens dungeons with, and compare.
     saveEdit();
     if (edit_->dirty()) return fail("not saved: " + status_);
-    auto reloaded = blockSource()(edit_->bsaIndex());
+    auto reloaded = blockSource()(edit_->name());
     if (!reloaded) return fail("reload failed: " + reloaded.error().message);
     if (reloaded->objectCount() != edit_->block().objectCount()) return fail("the saved patch reloads differently");
     log += "saved " + patches_->fileFor(edit_->name()).string() + " and reloaded it\n";
@@ -368,7 +392,8 @@ void Viewer::drawEditPanel() {
     }
     if (!edit_) {
         ImGui::TextWrapped("Select something in a block and press \"Edit this block\" in the Inspector.");
-        if (scene_.blocks.size() == 1 && scene_.blocks[0].bsaIndex != scene::kNoBsaIndex) {
+        if (scene_.blocks.size() == 1 &&
+            (scene_.blocks[0].bsaIndex != scene::kNoBsaIndex || isProjectBlock(scene_.blocks[0].name))) {
             if (ImGui::Button(std::format("Edit {}", scene_.blocks[0].name).c_str())) beginEdit(0);
         }
         ImGui::Separator();
@@ -380,12 +405,17 @@ void Viewer::drawEditPanel() {
 
     // What is being edited, and where it shows.
     const auto& name = edit_->name();
-    const auto users = std::ranges::count_if(dungeons_, [&](const auto& d) {
-        return std::ranges::any_of(d.blocks, [&](const auto& b) { return b.blockName == name; });
-    });
-    ImGui::Text("Editing %s", name.c_str());
-    if (users > 1) {
+    const auto [classicUsers, projectUsers] = usersOf(name);
+    const auto users = classicUsers + projectUsers;
+    if (const auto* own = project_.block(name)) {
+        ImGui::Text("Editing %s  (%s)", name.c_str(), own->label.c_str());
+    } else {
+        ImGui::Text("Editing %s", name.c_str());
+    }
+    if (classicUsers > 0 && users > 1) {
         ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "Used by %td dungeons: changes show in all of them.", users);
+    } else if (users > 1) {
+        ImGui::TextDisabled("Used by %td of the project's dungeons.", users);
     } else if (users == 1) {
         ImGui::TextDisabled("Used by 1 dungeon.");
     }

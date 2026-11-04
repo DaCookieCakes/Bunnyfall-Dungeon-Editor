@@ -49,7 +49,8 @@ add_library(de_geometry STATIC src/geometry/model_mesh.cpp)
 target_link_libraries(de_geometry PUBLIC de_catalog PRIVATE de_warnings)
 
 # ---- scene: placed instances of a block or a dungeon, and picking; no GPU ----
-add_library(de_scene STATIC src/scene/dungeon_scene.cpp src/scene/picking.cpp src/scene/texture_table.cpp)
+add_library(de_scene STATIC src/scene/dungeon_scene.cpp src/scene/picking.cpp src/scene/texture_table.cpp
+  src/scene/grid.cpp)
 target_link_libraries(de_scene PUBLIC de_geometry PRIVATE de_warnings)
 
 # ---- export: World Data JSON and patches for Bunnyfall ----
@@ -70,6 +71,10 @@ target_link_libraries(de_export PUBLIC de_formats nlohmann_json_header PRIVATE d
 # ---- edit: changing a block (entities, undo, save identities); no GPU, no UI ----
 add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp)
 target_link_libraries(de_edit PUBLIC de_catalog PRIVATE de_warnings)
+
+# ---- project: the editor's own file of blocks and dungeons ----
+add_library(de_project STATIC src/project/project.cpp src/project/world_export.cpp)
+target_link_libraries(de_project PUBLIC de_export de_catalog PRIVATE de_warnings)
 
 # ---- the application: window, renderer, UI ----
 if(DE_BUILD_APP)
@@ -106,8 +111,10 @@ if(DE_BUILD_APP)
     src/app/main.cpp
     src/app/viewer.cpp
     src/app/viewer_edit.cpp
+    src/app/viewer_project.cpp
   )
-  target_link_libraries(dungeon_editor PRIVATE de_render de_catalog de_edit de_export imgui SDL3::SDL3 de_warnings)
+  target_link_libraries(dungeon_editor PRIVATE de_render de_catalog de_edit de_export de_project imgui SDL3::SDL3
+                        de_warnings)
 endif()
 
 if(DE_BUILD_TOOLS)
@@ -148,8 +155,12 @@ if(DE_BUILD_TESTS)
     tests/camera_test.cpp
     tests/export_test.cpp
     tests/edit_test.cpp
+    tests/grid_test.cpp
+    tests/project_test.cpp
+    tests/world_export_test.cpp
   )
-  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit doctest::doctest de_warnings)
+  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit de_project doctest::doctest
+                        de_warnings)
 
   # Data tests read ARENA2 from DE_ARENA2; default to the workspace copy beside this project.
   set(DE_ARENA2 "${CMAKE_SOURCE_DIR}/../DFData/ARENA2" CACHE PATH "ARENA2 directory for data tests")
