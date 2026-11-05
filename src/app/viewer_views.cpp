@@ -55,6 +55,10 @@ scene::Ray Viewer::rayAt(double x, double y) const {
 }
 
 void Viewer::frameOrthoViews() {
+    if (modelEditor_) {
+        frameModel();
+        return;
+    }
     if (scene_.blocks.empty()) return;
     catalog::Vec3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
     for (const auto& b : scene_.blocks) {
@@ -104,9 +108,14 @@ void Viewer::drawViewsWindow() {
             mouseX_ = ImGui::GetIO().MousePos.x - v.min.x;
             mouseY_ = ImGui::GetIO().MousePos.y - v.min.y;
         }
-        if (grabbing_) grabTo(mouseX_, mouseY_);
-        continueDrag();
-        updateGhost();
+        if (modelEditor_) {
+            continueModelDrag();
+            rightPress_.reset();   // the model editor has no menu in the views
+        } else {
+            if (grabbing_) grabTo(mouseX_, mouseY_);
+            continueDrag();
+            updateGhost();
+        }
 
         // A right-click that neither looked nor panned: the menu for what is under the pointer.
         if (rightPress_ && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
@@ -171,9 +180,15 @@ void Viewer::drawView(std::size_t index, ImVec2 min, ImVec2 size) {
         list->AddImage(static_cast<ImTextureID>(v.target.texture()), v.min, add(v.min, v.size), {0, 1}, {1, 0});
     }
     if (v.kind != ViewKind::Perspective) drawOrthoGrid(index);
-    drawLogicLinks(index);
-    const bool overHandle = drawGizmo(index);
-    viewInput(index, overHandle);
+    if (modelEditor_) {
+        const bool overHandle = drawModelOverlay(index);
+        modelViewInput(index, overHandle);
+        viewInput(index, overHandle);
+    } else {
+        drawLogicLinks(index);
+        const bool overHandle = drawGizmo(index);
+        viewInput(index, overHandle);
+    }
     if (pointerView_ == index && !maximised_) {
         list->AddRect(v.min, add(v.min, v.size), ImGui::GetColorU32(ImGuiCol_CheckMark, 0.5f));
     }
@@ -221,7 +236,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
     const double mx = io.MousePos.x - v.min.x, my = io.MousePos.y - v.min.y;
     const bool ortho = v.kind != ViewKind::Perspective;
 
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !modelEditor_) {
         if (linkFrom_) finishLink(pickAt(mx, my, selectOptions()));
         else if (grabbing_) endGrab(true);
         else if (placingAnything()) placeAt(mx, my);
@@ -235,7 +250,8 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
             drag_.toggle = io.KeyCtrl;
         }
     }
-    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !linkFrom_ && !grabbing_ && !placingAnything()) {
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !linkFrom_ && !grabbing_ && !placingAnything() &&
+        !modelEditor_) {
         // Like Hammer: a double-click opens the object's properties (it becomes the one Properties shows).
         if (const auto hit = pickAt(mx, my, selectOptions())) {
             const auto ref = refOf(hit->kind, hit->index);
@@ -248,7 +264,8 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
             openProperties(io.MousePos);
         }
     }
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && drag_.kind == Drag::Kind::None) {
+    const bool modelDragging = modelEditor_ && modelEditor_->drag.kind != ModelEditor::Drag::Kind::None;
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && drag_.kind == Drag::Kind::None && !modelDragging) {
         if (linkFrom_) linkFrom_.reset();
         else if (grabbing_) endGrab(false);
         else if (placingAnything()) stopPlacing();
@@ -298,6 +315,27 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
 
 void Viewer::renderViews(float pixelsPerPoint) {
     thumbnails_.renderPending(*renderer_);
+    if (modelEditor_) {
+        // The model alone, drawn as the dungeon is (2D views as wireframe).
+        modelChanged();
+        for (std::size_t i = 0; i < views_.size(); ++i) {
+            auto& v = views_[i];
+            if (!v.shown) continue;
+            const int w = std::max(1, int(std::lround(v.size.x * pixelsPerPoint)));
+            const int h = std::max(1, int(std::lround(v.size.y * pixelsPerPoint)));
+            if (!v.target.bind(w, h)) continue;
+            auto options = drawOptions_;
+            if (v.kind != ViewKind::Perspective) {
+                options.wireframe = true;
+                options.wireColours = true;
+                options.cullBackFaces = false;
+                options.grid = false;
+            }
+            renderer_->draw(modelEditor_->drawn, cameraOf(i), w, h, options, {});
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return;
+    }
     updateFlags();
     // The preview, drawn tinted as if selected, for this frame only.
     const auto realModels = scene_.models.size(), realFlats = scene_.flats.size();

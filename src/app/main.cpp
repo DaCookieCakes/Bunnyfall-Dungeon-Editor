@@ -44,6 +44,7 @@ struct Options {
     int frames = 0;   // > 0: run this many frames hidden, then exit
     std::string patches;
     std::string checkEdit;      // a folder: run the scripted edit check, saving its patch there
+    std::string checkModel;     // a folder: run the scripted model editor check, exporting there
     std::string checkProject;   // a folder: run the scripted project check, exporting there
     std::string mod;
     std::string project;
@@ -69,6 +70,7 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--frames" && (v = next())) o.frames = std::atoi(v);
         else if (a == "--patches" && (v = next())) o.patches = v;
         else if (a == "--check-edit" && (v = next())) o.checkEdit = v;
+        else if (a == "--check-model" && (v = next())) o.checkModel = v;
         else if (a == "--check-project" && (v = next())) o.checkProject = v;
         else if (a == "--mod" && (v = next())) o.mod = v;
         else if (a == "--project" && (v = next())) o.project = v;
@@ -152,7 +154,7 @@ int main(int argc, char** argv) {
     if (!parse(argc, argv, o)) {
             std::println(stderr, "usage: dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME] "
                              "[--screenshot OUT.png [--size WxH] [--top] [--camera x,y,z,yawDeg,pitchDeg]] "
-                             "[--frames N] [--mod DIR] [--patches DIR] [--project FILE] [--check-edit DIR] "
+                             "[--frames N] [--mod DIR] [--patches DIR] [--project FILE] [--check-edit DIR] [--check-model DIR] "
                              "[--check-project DIR] [--ui] [--grid] [--select OFFSET]");
         return 2;
     }
@@ -162,7 +164,8 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    const bool offscreen = !o.screenshot.empty() || o.frames > 0 || !o.checkEdit.empty() || !o.checkProject.empty();
+    const bool offscreen = !o.screenshot.empty() || o.frames > 0 || !o.checkEdit.empty() || !o.checkProject.empty() ||
+                           !o.checkModel.empty();
     SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (offscreen) flags |= SDL_WINDOW_HIDDEN;
     SDL_Window* window = SDL_CreateWindow("Bunnyfall Dungeon Editor", o.width, o.height, flags);
@@ -255,9 +258,15 @@ int main(int argc, char** argv) {
             if (!log) return fatal("edit check: " + log.error().message);
             std::print("{}", *log);
         }
+        if (!o.checkModel.empty()) {
+            v.setViewSize(o.width, o.height);
+            auto log = v.checkModel(o.checkModel);
+            if (!log) return fatal("model check: " + log.error().message);
+            std::print("{}", *log);
+        }
         if (!o.screenshot.empty()) {
             status = screenshot(v, o);
-        } else if (o.checkEdit.empty() && o.checkProject.empty()) {
+        } else if (o.checkEdit.empty() && o.checkProject.empty() && o.checkModel.empty()) {
             int frame = 0;
             Uint64 last = SDL_GetTicksNS();
             while (!v.wantsQuit() && (o.frames <= 0 || frame++ < o.frames)) {

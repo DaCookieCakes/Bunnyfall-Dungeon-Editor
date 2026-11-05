@@ -39,9 +39,28 @@ Checked under Node through Bunnyfall's own loader: the place joins its region, i
 out with its start marker, stays full size offline and online, and is no spawn template. Walking in was confirmed in
 the game on 2026-11-03.
 
+### 3. The editor's own models (2026-11-04)
+
+The model editor builds models ARCH3D does not have; the export writes each to `vendor/bunnyfall-dungeons/Models/<id>.json`
+(`bunnyfall-dungeon-model/1`, ids from 7,000,001). Bunnyfall registers them on its custom model registry, which
+`dataPipeline.js` and `dungeonContext.js` already ask before ARCH3D, so drawing, collision and the dungeon texture
+table need nothing new.
+
+| File | Change |
+|---|---|
+| `src/world/editorModels.js` (new) | Globs `vendor/*/Models/*.json`, checks each file (format, id, array lengths, index ranges) and registers it with `registerCustomModel`, behind its mod's `Enabled`. A bad file is warned about and skipped. |
+| `src/scenes/modWorldData.js` | `loadModWorldData` awaits `loadEditorModels()` after `installArena()`, before any block that names a model is read. One import, one line. |
+| `vendor/bunnyfall-dungeons/README.md` | Lists the `Models/` folder. |
+
+Checked under Node: an exported model registers, `customModelFor` answers it at the size it was built, and a file
+with an index out of range is refused. `npx eslint` is clean on both files. Not yet seen in the game.
+Backup of the original `modWorldData.js`: `bunnyfall-backups/2026-11-04/` at the workspace root.
+
+Daggerfall Unity has no such loader: a block placing a custom model shows nothing there in DFU.
+
 ## Still to make
 
-### 3. An explicit texture table per dungeon (planned)
+### 4. An explicit texture table per dungeon (planned)
 
 A dungeon's wall, floor and sewer textures come from a table seeded by its location id and climate
 (`world/dungeon/dungeonTextures.js`). The editor gives each placed piece one of the table's slots (texture "twins":
@@ -49,7 +68,7 @@ A dungeon's wall, floor and sewer textures come from a table seeded by its locat
 To let a designer choose them: an optional field in the editor's location JSON (the six archives) that
 `dungeonTextureTable` uses when present. DFU ignores the field. Not yet written.
 
-### 4. New messages for dungeon actions (needed later, not started)
+### 5. New messages for dungeon actions (needed later, not started)
 
 "Show text", "show text with input" and door-text actions can only show records already in the player's TEXT.RSC
 (10 messages, 5 riddles, 13 door texts). Authored dungeons will want their own words. Wanted: a per-mod text table
@@ -58,5 +77,5 @@ before TEXT.RSC for ids above the classic range. DFU would show nothing for thos
 
 ### Later (separate work)
 
-- **Custom geometry and textures** (milestone "B"): a loader for a mod's meshes and pictures, mapped onto model ids
-  ARCH3D does not use, so the editor can ship new room shapes and texture images. Bunnyfall-only content.
+- **New texture images** (milestone 8, stage 2): the mesh loader is in (change 3). Pictures of the designer's own
+  need `addVendorTextures` entries (stand-in archives, as Detailed Ships' are) read from `vendor/<mod>/Textures/`.

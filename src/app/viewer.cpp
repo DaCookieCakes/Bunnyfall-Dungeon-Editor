@@ -80,6 +80,7 @@ std::optional<std::size_t> Viewer::findDungeon(const std::string& key) const {
 }
 
 void Viewer::setScene(scene::Scene scene) {
+    closeModelEditor();
     endEdit();
     scene_ = std::move(scene);
     ++sceneStamp_;
@@ -208,7 +209,8 @@ void Viewer::handleEvent(const SDL_Event& event) {
     switch (event.type) {
         case SDL_EVENT_KEY_DOWN:
             if (ImGui::GetIO().WantCaptureKeyboard) break;
-            handleEditKey(event.key);
+            if (modelEditor_) handleModelKey(event.key);
+            else handleEditKey(event.key);
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
             if (event.button.button == SDL_BUTTON_RIGHT && looking_) {
@@ -259,6 +261,11 @@ std::vector<std::string> Viewer::problems() const {
 }
 
 void Viewer::drawPerspective(int pixelWidth, int pixelHeight) {
+    if (modelEditor_) {
+        modelChanged();
+        renderer_->draw(modelEditor_->drawn, camera_, pixelWidth, pixelHeight, drawOptions_, {});
+        return;
+    }
     updateFlags();
     renderer_->draw(scene_, camera_, pixelWidth, pixelHeight, drawOptions_, flags_);
 }
@@ -402,6 +409,7 @@ void Viewer::drawReadOnlyGeneral(const scene::ObjectRef& ref) {
         }
         ImGui::Text("rotation (%d, %d, %d)  = y %.1f deg", m->xRotation, m->yRotation, m->zRotation,
                     -catalog::rotationDegrees(m->yRotation));
+        if (project_.model(refEntry.modelIdNum) && ImGui::Button("Edit model")) openModelEditor(refEntry.modelIdNum);
     } else if (const auto* f = obj.flat()) {
         if (f->textureArchive() == kEditorFlatArchive) {
             ImGui::Text("%s  (199/%d)", std::string(catalog::markerName(f->textureRecord())).c_str(),

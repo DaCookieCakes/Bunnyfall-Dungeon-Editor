@@ -7,6 +7,7 @@
 
 #include "core/error.h"
 #include "formats/rdb.h"
+#include "mesh/mesh.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -23,6 +24,17 @@ struct CustomBlock {
     std::optional<std::string> templateName;   ///< The classic block it started as; none when built from empty.
     std::uint32_t savePosition = 0;        ///< Its Position: the base of its objects' save identities.
     formats::RdbBlock data;
+};
+
+/// A model the project builds (the model editor's), placed in blocks like any ARCH3D model. Bunnyfall loads it from the
+/// mod's Models folder; Daggerfall Unity has no such loader, so a block using one shows nothing there (DESIGN.md §7.3).
+struct CustomModel {
+    std::uint32_t id = 0;            ///< Issued once, from kFirstCustomModelId: blocks name the model by it.
+    std::string label;               ///< The designer's own name for it.
+    /// The three letters a block's model list gives it, which say what it is to the game and the catalog: "C00" a
+    /// corridor or room piece, "DOR" an action door, anything else a prop (or architecture, when big enough).
+    std::string description = "C00";
+    mesh::Mesh mesh;
 };
 
 struct DungeonCell {
@@ -58,6 +70,11 @@ struct ProjectDungeon {
 inline constexpr int kFirstMapIdHigh = 1900;          // classic high parts go up to 1832
 inline constexpr int kMaxDungeons = 2048 - kFirstMapIdHigh;   // map ids stay below 2^31
 inline constexpr std::uint16_t kFirstLocationId = 60000;      // classic ids reach 51000; Bunnyfall's undercroft is 55398
+/// Custom model ids: past every ARCH3D id (classic ones stay under 100,000) and every model Bunnyfall registers itself
+/// (its own reach 864,111).
+inline constexpr std::uint32_t kFirstCustomModelId = 7'000'000;
+inline constexpr int kMaxModels = 999'999;
+inline bool isCustomModelId(std::uint32_t id) { return id > kFirstCustomModelId && id <= kFirstCustomModelId + kMaxModels; }
 inline constexpr std::uint32_t kFirstBlockSavePosition = 40'000'000;   // past BLOCKS.BSA's 32,884,997 bytes
 /// Room for one block's own object offsets: classic ones stay under 65,536 and the editor's new objects start at
 /// 900,000 (edit::kFirstNewPosition), so 2^20 holds either.
@@ -76,6 +93,9 @@ public:
     [[nodiscard]] CustomBlock* block(std::string_view blockName);
     [[nodiscard]] const CustomBlock* block(std::string_view blockName) const;
     [[nodiscard]] ProjectDungeon* dungeon(int number);
+    [[nodiscard]] const std::vector<CustomModel>& models() const { return models_; }
+    [[nodiscard]] CustomModel* model(std::uint32_t id);
+    [[nodiscard]] const CustomModel* model(std::uint32_t id) const;
 
     /// A new block of the role `letter` (N, W, S, M or B), started from `data` (a copy of `templateName`, or empty).
     /// Pointers into the project last until the next block or dungeon is added or removed.
@@ -83,6 +103,9 @@ public:
                                   formats::RdbBlock data);
     /// A new dungeon with its own number. Its cells start empty.
     Result<ProjectDungeon*> addDungeon(std::string placeName);
+    /// A new custom model with its own id.
+    Result<CustomModel*> addModel(std::string label, std::string description, mesh::Mesh mesh);
+    bool removeModel(std::uint32_t id);
     bool removeBlock(std::string_view blockName);
     bool removeDungeon(int number);
 
@@ -92,12 +115,15 @@ public:
     /// The numbers handed out so far (stored so they are never handed out again).
     [[nodiscard]] int blocksIssued() const { return blocksIssued_; }
     [[nodiscard]] int dungeonsIssued() const { return dungeonsIssued_; }
+    [[nodiscard]] int modelsIssued() const { return modelsIssued_; }
 
 private:
     std::vector<CustomBlock> blocks_;
     std::vector<ProjectDungeon> dungeons_;
+    std::vector<CustomModel> models_;
     int blocksIssued_ = 0;
     int dungeonsIssued_ = 0;
+    int modelsIssued_ = 0;
 };
 
 /// An empty RDB block: no objects, 16 object roots, an empty model list.

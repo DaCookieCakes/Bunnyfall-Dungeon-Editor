@@ -21,6 +21,8 @@ public:
     /// Draws up to `budget` queued pictures. Call with no UI frame in progress (after ImGui::Render); leaves the
     /// default framebuffer bound.
     void renderPending(Renderer& renderer, int budget = 6);
+    /// Drops a model's picture (its mesh changed); the next get draws it again.
+    void forget(std::uint32_t modelId);
 
     Thumbnails() = default;
     Thumbnails(const Thumbnails&) = delete;

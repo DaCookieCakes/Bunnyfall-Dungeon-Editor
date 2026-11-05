@@ -10,6 +10,8 @@
 #include "formats/text_rsc.h"
 #include "logic/action.h"
 #include "logic/edit.h"
+#include "mesh/mesh_edit.h"
+#include "mesh/ops.h"
 #include "project/prefab.h"
 #include "project/project.h"
 #include "project/world_export.h"
@@ -22,6 +24,7 @@
 #include <imgui.h>
 
 #include <array>
+#include <map>
 #include <memory>
 #include <unordered_set>
 #include <optional>
@@ -101,6 +104,11 @@ public:
 
     /// Selects the first object at this offset (in any block) and frames it. For scripted screenshots.
     bool selectAtOffset(std::int32_t offset);
+
+    /// A scripted run of the model editor (--check-model): a new custom model from a room, a wall pushed out into a
+    /// corridor, retextured and fitted, undone and redone, placed in a new block of the project, and the project
+    /// exported to `modDir`. Leaves the model editor open (for a screenshot). Answers a line per step.
+    Result<std::string> checkModel(const std::filesystem::path& modDir);
 
 private:
     Viewer(const formats::Arena2& arena2, catalog::Catalog catalog, std::vector<formats::DungeonRecord> dungeons,
@@ -311,6 +319,104 @@ private:
     /// Poses the previewed objects for this frame; undone by endPreviewPose.
     void poseForPreview(double seconds);
     void endPreviewPose();
+
+    // ---- the model editor (viewer_mesh.cpp) ----
+    /// Building a custom model: the views show it alone, picking points and faces instead of objects. Every change
+    /// goes straight into the project's model (undo is the editor's); the dungeon comes back on closing.
+    struct ModelEditor {
+        explicit ModelEditor(std::uint32_t id, mesh::Mesh start) : modelId(id), edit(std::move(start)) {}
+        std::uint32_t modelId;
+        mesh::MeshEdit edit;
+        std::uint64_t syncedRevision = ~std::uint64_t{0};   // the revision the caches and the project hold
+        enum class Pick { Points, Faces } pick = Pick::Faces;
+        mesh::PointSet points;   // the selection, by kind
+        mesh::FaceSet faces;
+        std::optional<std::uint32_t> reference;   // a classic model drawn as lines, to trace and snap to
+        scene::Scene drawn;                       // what the views draw: the model alone at the origin
+        render::Camera savedCamera;               // the dungeon's views, put back on closing
+        std::array<std::pair<catalog::Vec3, double>, 4> savedViews{};
+        // A drag in a view: a box, the selection moved in the view's plane, or along one axis.
+        struct Drag {
+            enum class Kind { None, Pending, Box, Plane, Axis } kind = Kind::None;
+            std::size_t view = 0;
+            ImVec2 press{};
+            bool onSelection = false;           // Pending: pressed on what is selected (a drag moves it)
+            bool add = false, toggle = false;   // Shift, Ctrl at the press
+            int axis = 0;                       // Axis: 0 X, 1 Y, 2 Z
+            bool vertical = false;              // Plane in the 3D view: up and down instead of across
+            catalog::Vec3 anchor;               // the point that snaps (the grabbed corner)
+            catalog::Vec3 planeNormal;          // Plane: the plane it slides in, through the anchor
+            catalog::Vec3 grabHit;              // Plane: where the pointer met that plane at the start
+            std::map<std::uint32_t, catalog::Vec3> start;   // where the moving points were
+        } drag;
+        double grid = 16;            // block units; snaps moves and new shapes
+        bool snapPoints = true;      // a moved corner lands on a point near the pointer
+        double extrudeBy = 128;
+        catalog::Box shape{{-64, 0, -64}, {64, 128, 64}};   // the box (or stairs) the Shapes section adds
+        bool inward = true;
+        std::array<bool, 6> sides{true, true, true, true, true, true};
+        int steps = 8;
+        double moveBy[3] = {0, 0, 0};
+        double mergeDistance = 0.5;
+        mesh::Opening opening{.width = 64, .height = 96, .bottom = 0, .across = 0, .depth = 0};
+        bool showCuts = false;       // the Cuts section is open: the opening is drawn on the selected faces
+        int sliceAxis = 1;           // 0 X, 1 Y, 2 Z
+        double sliceAt = 64;
+        mesh::FaceTexture brush{120, 0};
+        int browseArchive = 120;
+        char referenceText[12] = "";
+    };
+    std::optional<ModelEditor> modelEditor_;
+    /// Every custom model of the project into the catalog and the model cache (after loading a project).
+    void registerCustomModels();
+    /// One custom model's catalog entry, drawn mesh and thumbnail, from the project's copy.
+    void syncCustomModel(std::uint32_t id);
+    /// A new custom model (a room one cell across and two high, like corridor 67000), opened in the model editor.
+    void newCustomModel();
+    void openModelEditor(std::uint32_t id);
+    void closeModelEditor();
+    /// After a change to the edited mesh: the project's copy, the caches and the drawn scene follow.
+    void modelChanged();
+    [[nodiscard]] project::CustomModel* editedModel();
+    void drawModelEditorPanel();
+    /// The Models panel's Custom tab: the project's models, a New button, edit and delete.
+    void drawCustomModelList();
+    void drawModelTextures();
+    void drawModelUv();
+    /// The overlay in a view (edges, points, the selection, the reference, the handles); true while the pointer is on
+    /// a handle.
+    bool drawModelOverlay(std::size_t view);
+    void modelViewInput(std::size_t view, bool overHandle);
+    void continueModelDrag();
+    bool handleModelKey(const SDL_KeyboardEvent& key);
+    /// The point or face under the pointer in a view, by the editor's pick kind.
+    [[nodiscard]] std::optional<std::uint32_t> pickModelElement(std::size_t view, ImVec2 at) const;
+    void clickModelSelect(std::optional<std::uint32_t> hit, bool add, bool toggle);
+    void boxModelSelect(std::size_t view, ImVec2 a, ImVec2 b, bool add, bool toggle);
+    /// The points the selection moves (a face selection moves its faces' points).
+    [[nodiscard]] mesh::PointSet modelMovingPoints() const;
+    [[nodiscard]] std::optional<catalog::Vec3> modelSelectionCentre() const;
+    /// Where a moved corner should land for the pointer at `pointer` (screen points) in a view: on a point near the
+    /// pointer (not one being moved), else on the grid along `axes` (x, y, z moving or not).
+    [[nodiscard]] catalog::Vec3 snapModelPoint(std::size_t view, catalog::Vec3 wanted, ImVec2 pointer,
+                                               std::array<bool, 3> axes) const;
+    void frameModel();
+    // The editor's actions, each one undo step (shared by the panel, the keys and the scripted check).
+    void modelExtrude(double distance);
+    void modelDelete();
+    void modelFlip();
+    void modelJoin();
+    void modelSplitEdge();
+    void modelWeld();
+    void modelMove(catalog::Vec3 offset);
+    void modelTurn(double degrees);
+    void modelMirror(int axis);
+    void modelDuplicate();
+    void modelApplyTexture(mesh::FaceTexture texture);
+    void modelAddBox();
+    void modelAddStairs();
+    void modelCutOpening();
+    void modelSlice();
 
     // ---- the project (viewer_project.cpp) ----
     void drawProjectPanel();

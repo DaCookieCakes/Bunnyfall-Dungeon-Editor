@@ -105,6 +105,42 @@ Saving writes the block as a patch into the patch folder: `--patches DIR`, by de
 on where it stopped; a block edited back to the original has its patch removed. A classic block is shared: the Edit
 panel says how many dungeons show the change.
 
+### Building your own models
+
+**File > New model** (or **New model** in the Models panel's **Custom** tab) starts a piece of your own: a room one
+cell across and two high, like corridor 67000. The views then show the model alone, with its origin (the point a
+block places it by) at the cross of coloured lines. The **Model** panel (where Edit was) holds the tools:
+
+- **Pick** points (**1**) or faces (**2**; **Tab** switches). Click, Shift+click adds, Ctrl+click toggles, drag on
+  empty space for a box, **Ctrl+A** all. In the 2D views a face edge-on is picked by the dot at its middle.
+- **Move**: drag a selected point or face (in 3D across the floor; hold Shift for up and down), or drag an axis arrow.
+  The corner you grab lands on the **grid** (its step is in the panel), or with **snap to points** on any point near
+  the pointer. **Show reference** draws a classic model in blue lines to build to and snap to; none of it is copied.
+  Arrows and PgUp/PgDn move by a grid step; Move, Turn and Mirror in the panel take exact values.
+- **Shapes**: a box between two corners, seen from inside (a room) or outside (a solid), with any sides left off, or
+  a flight of stairs across the same box.
+- **Edit**: **Push out** (**X**) moves faces back behind themselves joined to where they were, so a room's wall
+  becomes a corridor; **Pull in** (**Shift+X**) grows a solid. **Join** (**J**) cuts a face between two picked points,
+  or fills a face between three or more. **Flip** (**N**) turns faces round (a face is seen from one side). Split edge,
+  Weld, Copy (**Ctrl+D**), Delete (**Del**), Merge close points.
+- **Cuts**: **Cut opening** takes a doorway, window or trapdoor out of the selected faces: its width, height, how
+  far up from the face's bottom and across from its middle, drawn on them in cyan before you cut (Door, Arch and
+  Window presets). The wall becomes the pieces round the hole, its texture unbroken; with a **reveal depth** the hole
+  is lined that deep behind the face (sides, a sill in the floor texture, a lintel in the ceiling's), so a doorway
+  through a thick wall or into a corridor behind is closed in. **Slice** cuts the selected faces in two along a grid
+  line (X, Y or Z =; **here** takes the selection's middle). Both put the new corners into the neighbouring faces'
+  edges, so nothing cracks.
+- **Texture**: the six dungeon sets (each dungeon's texture table swaps them, as it does classic walls) or any archive
+  by number. Click a picture to lay it on the selected faces. **Texture alignment**: units per texel (classic: 2),
+  offset, turn; **Fit** puts one copy across each face, **Classic** lines faces up on the world.
+- The kind (architecture, action door, prop) is the description blocks give it: pieces snap to the classic grid, and
+  DOR makes an action door.
+
+Every change goes into the project at once (**Ctrl+Z / Ctrl+Y** undo inside the model; save with the project).
+**Close** brings the dungeon back. The model is then in the Custom tab (and in its kind's tab), placed like any
+other; **Edit model** in Properties opens it again. Export writes each model to the mod's `Models/<id>.json`, which
+Bunnyfall loads (`src/world/editorModels.js`). Daggerfall Unity cannot load it.
+
 ### Making your own dungeons
 
 The **Project** panel holds your own dungeons and blocks, saved in `projects/bunnyfall-dungeons.project.json`
@@ -131,7 +167,9 @@ you set (or the floor below you, or the selection's level).
 `--screenshot out.png [--size WxH] [--top] [--camera x,y,z,yaw,pitch] [--ui]` draws one frame offscreen (with the
 panels, with `--ui`) and exits; `--frames N` runs the whole app hidden for N frames; `--check-edit DIR` runs the edit
 tools as clicks would (places one of everything ahead, moves, undoes, saves to DIR and reloads); `--check-project
-DIR` makes a block and a dungeon, caps it, opens it and exports to DIR. Both combine with `--screenshot`, and `--grid`
+DIR` makes a block and a dungeon, caps it, opens it and exports to DIR; `--check-model DIR` builds a model (a wall
+pushed into a corridor, dragged, retextured, undone and redone), places it in a block and exports to DIR. All three
+combine with `--screenshot`, and `--grid`
 shows the sizing grid. `--select OFFSET` selects (and frames) the object at that offset, for screenshots of its
 Properties.
 

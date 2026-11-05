@@ -1,6 +1,7 @@
 #include "project/project.h"
 
 #include "export/dfu_json.h"
+#include "mesh/mesh_json.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -69,6 +70,30 @@ ProjectDungeon* Project::dungeon(int number) {
     return it == dungeons_.end() ? nullptr : &*it;
 }
 
+CustomModel* Project::model(std::uint32_t id) {
+    const auto it = std::ranges::find(models_, id, &CustomModel::id);
+    return it == models_.end() ? nullptr : &*it;
+}
+const CustomModel* Project::model(std::uint32_t id) const {
+    const auto it = std::ranges::find(models_, id, &CustomModel::id);
+    return it == models_.end() ? nullptr : &*it;
+}
+
+Result<CustomModel*> Project::addModel(std::string label, std::string description, mesh::Mesh mesh) {
+    if (modelsIssued_ >= kMaxModels) return fail("the project has used all its model numbers");
+    CustomModel m;
+    m.id = kFirstCustomModelId + static_cast<std::uint32_t>(++modelsIssued_);
+    m.label = std::move(label);
+    m.description = description.substr(0, 3);
+    m.mesh = std::move(mesh);
+    models_.push_back(std::move(m));
+    return &models_.back();
+}
+
+bool Project::removeModel(std::uint32_t id) {
+    return std::erase_if(models_, [&](const CustomModel& m) { return m.id == id; }) > 0;
+}
+
 Result<CustomBlock*> Project::addBlock(char letter, std::string label, std::optional<std::string> templateName,
                                        formats::RdbBlock data) {
     if (kRoleLetters.find(letter) == std::string_view::npos) return fail(std::string("no block role '") + letter + "'");
@@ -102,7 +127,11 @@ bool Project::removeDungeon(int number) {
 }
 
 Result<void> Project::save(const std::filesystem::path& file) const {
-    Json j = {{"format", kFormat}, {"name", name}, {"blocksIssued", blocksIssued_}, {"dungeonsIssued", dungeonsIssued_}};
+    Json j = {{"format", kFormat},
+              {"name", name},
+              {"blocksIssued", blocksIssued_},
+              {"dungeonsIssued", dungeonsIssued_},
+              {"modelsIssued", modelsIssued_}};
     Json blocks = Json::array();
     for (const auto& b : blocks_) {
         blocks.push_back({
@@ -131,6 +160,11 @@ Result<void> Project::save(const std::filesystem::path& file) const {
         });
     }
     j["dungeons"] = std::move(dungeons);
+    Json models = Json::array();
+    for (const auto& m : models_) {
+        models.push_back({{"id", m.id}, {"label", m.label}, {"description", m.description}, {"mesh", mesh::meshToJson(m.mesh)}});
+    }
+    j["models"] = std::move(models);
 
     std::error_code ec;
     if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path(), ec);
@@ -155,6 +189,7 @@ Result<Project> Project::load(const std::filesystem::path& file) {
     p.name = j.value("name", p.name);
     p.blocksIssued_ = j.value("blocksIssued", 0);
     p.dungeonsIssued_ = j.value("dungeonsIssued", 0);
+    p.modelsIssued_ = j.value("modelsIssued", 0);
     for (const auto& b : j.value("blocks", Json::array())) {
         CustomBlock block;
         block.name = b.value("name", "");
@@ -185,9 +220,21 @@ Result<Project> Project::load(const std::filesystem::path& file) {
         }
         p.dungeons_.push_back(std::move(dungeon));
     }
+    for (const auto& m : j.value("models", Json::array())) {
+        CustomModel model;
+        model.id = m.value("id", 0u);
+        if (!isCustomModelId(model.id)) return fail(file.string() + ": bad model id " + std::to_string(model.id));
+        model.label = m.value("label", "");
+        model.description = m.value("description", "C00").substr(0, 3);
+        auto meshData = mesh::meshFromJson(m.value("mesh", Json::object()));
+        if (!meshData) return fail(file.string() + ": model " + std::to_string(model.id) + ": " + meshData.error().message);
+        model.mesh = std::move(*meshData);
+        p.models_.push_back(std::move(model));
+    }
     // Numbers are never handed out twice, even if the counters in the file were lost.
     for (const auto& b : p.blocks_) p.blocksIssued_ = std::max(p.blocksIssued_, std::stoi(b.name.substr(3, 5)));
     for (const auto& d : p.dungeons_) p.dungeonsIssued_ = std::max(p.dungeonsIssued_, d.number + 1);
+    for (const auto& m : p.models_) p.modelsIssued_ = std::max(p.modelsIssued_, static_cast<int>(m.id - kFirstCustomModelId));
     return p;
 }
 

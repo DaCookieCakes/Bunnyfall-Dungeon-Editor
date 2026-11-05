@@ -45,15 +45,31 @@ std::optional<GpuModel> upload(geometry::ModelMesh mesh) {
     return m;
 }
 
+void release(GpuModel& m) {
+    glDeleteVertexArrays(1, &m.vao);
+    glDeleteBuffers(1, &m.vbo);
+    glDeleteBuffers(1, &m.ebo);
+}
+
 } // namespace
 
 ModelCache::~ModelCache() {
     for (auto& [_, m] : models_) {
-        if (!m) continue;
-        glDeleteVertexArrays(1, &m->vao);
-        glDeleteBuffers(1, &m->vbo);
-        glDeleteBuffers(1, &m->ebo);
+        if (m) release(*m);
     }
+}
+
+void ModelCache::setMesh(std::uint32_t id, geometry::ModelMesh mesh) {
+    forget(id);   // its old upload
+    custom_.insert_or_assign(id, std::move(mesh));
+}
+
+void ModelCache::forget(std::uint32_t id) {
+    if (const auto it = models_.find(id); it != models_.end()) {
+        if (it->second) release(*it->second);
+        models_.erase(it);
+    }
+    custom_.erase(id);
 }
 
 const GpuModel* ModelCache::get(std::uint32_t id) {
@@ -61,7 +77,9 @@ const GpuModel* ModelCache::get(std::uint32_t id) {
     if (it == models_.end()) {
         std::optional<GpuModel> model;
         const auto index = arch3d_.findById(id);
-        if (!index) {
+        if (const auto own = custom_.find(id); own != custom_.end()) {
+            if (!own->second.indices.empty()) model = upload(own->second);   // an empty mesh draws nothing
+        } else if (!index) {
             problems_.push_back("model " + std::to_string(id) + " is not in ARCH3D.BSA");
         } else if (auto raw = formats::parseArch3dMesh(arch3d_.record(*index), id); !raw) {
             problems_.push_back(raw.error().message);

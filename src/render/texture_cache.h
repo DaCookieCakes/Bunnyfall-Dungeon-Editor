@@ -36,6 +36,8 @@ public:
 
     /// How many records an archive has (0 if it will not load).
     std::size_t recordCount(int archive);
+    /// The archive's own description ("" if it will not load).
+    std::string description(int archive);
 
     /// Problems met so far (missing archives, bad records), one line each.
     [[nodiscard]] const std::vector<std::string>& problems() const { return problems_; }

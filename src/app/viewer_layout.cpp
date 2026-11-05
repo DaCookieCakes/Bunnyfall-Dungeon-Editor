@@ -64,8 +64,16 @@ void Viewer::drawUi() {
                 ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "isolated: %s", scene_.blocks[*isolated_].name.c_str());
                 separator();
             }
-            if (edit_) ImGui::Text("editing %s%s", edit_->name().c_str(), edit_->dirty() ? " *" : "");
-            else ImGui::TextDisabled("viewing");
+            if (modelEditor_) {
+                const auto* model = project_.model(modelEditor_->modelId);
+                ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "building model %u %s (%s)",
+                                   modelEditor_->modelId, model ? model->label.c_str() : "",
+                                   modelEditor_->pick == ModelEditor::Pick::Points ? "points" : "faces");
+            } else if (edit_) {
+                ImGui::Text("editing %s%s", edit_->name().c_str(), edit_->dirty() ? " *" : "");
+            } else {
+                ImGui::TextDisabled("viewing");
+            }
             if (placingAnything()) {
                 separator();
                 ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "placing: click a surface, right-click stops");
@@ -95,7 +103,9 @@ void Viewer::drawUi() {
     if (showOutliner_) drawOutliner();
     if (showProperties_) drawInspector();
     if (showViewPanel_) drawViewPanel();
-    if (showEdit_) drawEditPanel();
+    if (modelEditor_) modelChanged();
+    if (showEdit_ && !modelEditor_) drawEditPanel();
+    if (modelEditor_) drawModelEditorPanel();
     if (showProject_) drawProjectPanel();
     drawConfirmations();
     if (config_) drawPathsWindow(window_, *config_, &pathsOpen_);
@@ -129,6 +139,13 @@ void Viewer::drawUi() {
                     {"Ctrl+S", "save the edited block"},
                     {"L", "trigger arrows: all / the selection's chains / none"},
                     {"Esc", "cancel a move, stop placing, deselect"},
+                    {"Model editor", "File > New model, or a model's Edit button (Models > Custom)"},
+                    {"  1 / 2 / Tab", "pick points / faces"},
+                    {"  Drag the selection", "move it (3D: Shift for up and down); corners snap to the grid or a point"},
+                    {"  X / Shift+X", "push faces out (a wall into a corridor) / pull them in"},
+                    {"  J", "two points: cut the face between them; three or more: fill a face"},
+                    {"  N / Del / Ctrl+D", "flip faces / delete / copy"},
+                    {"  Arrows, PgUp/PgDn", "move the selection a grid step"},
                 };
                 for (const auto& [k, what] : rows) {
                     ImGui::TableNextRow();
@@ -151,19 +168,31 @@ void Viewer::drawMenuBar() {
         if (ImGui::MenuItem("Save project", nullptr, false, projectDirty_)) saveProject();
         if (ImGui::MenuItem("Export to Bunnyfall", nullptr, false, modDir_.has_value())) exportProject();
         ImGui::Separator();
+        if (ImGui::MenuItem("New model")) newCustomModel();
+        if (ImGui::MenuItem("Close the model editor", nullptr, false, modelEditor_.has_value())) closeModelEditor();
+        ImGui::Separator();
         if (ImGui::MenuItem("Paths...")) pathsOpen_ = true;
         ImGui::Separator();
         if (ImGui::MenuItem("Quit")) requestQuit();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, edit_.has_value()) && edit_->undo()) editChanged();
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, edit_.has_value()) && edit_->redo()) editChanged();
-        ImGui::Separator();
-        if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, edit_ && !selection_.empty())) duplicateSelected();
-        if (ImGui::MenuItem("Delete", "Del", false, edit_ && !selection_.empty())) deleteSelected();
-        ImGui::Separator();
-        if (ImGui::MenuItem("Stop editing", nullptr, false, edit_.has_value())) endEdit();
+        if (modelEditor_) {   // the model's history, not the block's
+            auto& history = modelEditor_->edit;
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, history.canUndo()) && history.undo()) modelChanged();
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, history.canRedo()) && history.redo()) modelChanged();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Copy faces", "Ctrl+D", false, !modelEditor_->faces.empty())) modelDuplicate();
+            if (ImGui::MenuItem("Delete", "Del")) modelDelete();
+        } else {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, edit_.has_value()) && edit_->undo()) editChanged();
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, edit_.has_value()) && edit_->redo()) editChanged();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, edit_ && !selection_.empty())) duplicateSelected();
+            if (ImGui::MenuItem("Delete", "Del", false, edit_ && !selection_.empty())) deleteSelected();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Stop editing", nullptr, false, edit_.has_value())) endEdit();
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -287,6 +316,7 @@ void Viewer::buildDefaultLayout(unsigned dockspace) {
     ImGui::DockBuilderDockWindow("Outliner", right);
     ImGui::DockBuilderDockWindow("View", right);
     ImGui::DockBuilderDockWindow("Edit", rightBottom);
+    ImGui::DockBuilderDockWindow("Model", rightBottom);
     ImGui::DockBuilderDockWindow("Project", bottom);
     ImGui::DockBuilderDockWindow("Viewports", centre);
     ImGui::DockBuilderFinish(dockspace);

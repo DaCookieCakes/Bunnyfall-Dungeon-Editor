@@ -66,6 +66,10 @@ FetchContent_MakeAvailable(nlohmann_json)
 add_library(nlohmann_json_header INTERFACE)
 target_include_directories(nlohmann_json_header SYSTEM INTERFACE "${nlohmann_json_SOURCE_DIR}/single_include")
 
+# ---- mesh: the custom models the model editor builds; no GPU, no UI ----
+add_library(de_mesh STATIC src/mesh/mesh.cpp src/mesh/ops.cpp src/mesh/mesh_edit.cpp src/mesh/mesh_json.cpp)
+target_link_libraries(de_mesh PUBLIC de_geometry nlohmann_json_header PRIVATE de_warnings)
+
 add_library(de_export STATIC src/export/dfu_json.cpp src/export/world_data_patch.cpp src/export/patch_folder.cpp)
 target_link_libraries(de_export PUBLIC de_formats nlohmann_json_header PRIVATE de_warnings)
 
@@ -80,7 +84,7 @@ target_link_libraries(de_logic PUBLIC de_edit de_catalog PRIVATE de_warnings)
 # ---- project: the editor's own file of blocks and dungeons ----
 
 add_library(de_project STATIC src/project/project.cpp src/project/world_export.cpp src/project/prefab.cpp)
-target_link_libraries(de_project PUBLIC de_export de_edit de_catalog PRIVATE de_warnings)
+target_link_libraries(de_project PUBLIC de_export de_edit de_catalog de_mesh PRIVATE de_warnings)
 
 # ---- the application: window, renderer, UI ----
 if(DE_BUILD_APP)
@@ -126,6 +130,7 @@ if(DE_BUILD_APP)
     src/app/viewer_outliner.cpp
     src/app/viewer_logic.cpp
     src/app/viewer_layout.cpp
+    src/app/viewer_mesh.cpp
     src/app/theme.cpp
     src/app/config.cpp
     src/app/setup.cpp
@@ -179,8 +184,9 @@ if(DE_BUILD_TESTS)
     tests/grid_test.cpp
     tests/project_test.cpp
     tests/world_export_test.cpp
+    tests/mesh_test.cpp
   )
-  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit de_logic de_project doctest::doctest
+  target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit de_logic de_project de_mesh doctest::doctest
                         de_warnings)
 
   # Data tests read ARENA2 from DE_ARENA2; default to the workspace copy beside this project.

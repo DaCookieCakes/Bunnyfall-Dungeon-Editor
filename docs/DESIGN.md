@@ -20,7 +20,7 @@ an exported dungeon. A few small Bunnyfall-side changes are needed to *ship* one
 ### Non-goals (for v1)
 
 - Editing town (RMB) blocks or exteriors beyond picking an entrance.
-- New 3D models or textures. See §7.3 for why and what it would take.
+- New textures. New 3D models are in since milestone 8 (Bunnyfall only, §7.3).
 - A gameplay simulator. Preview is visual; testing happens in Bunnyfall.
 
 ### Code rule
@@ -383,11 +383,27 @@ a Bunnyfall module that reads enemy definitions from the mod's JSON (base career
 registers them. The editor would then write that JSON as well. Until that exists, the editor allows only classic ids
 by default.
 
-### 7.3 Custom models (later)
+### 7.3 Custom models (milestone 8)
 
-Bunnyfall only adds models through JS builders (`registerCustomModel`). Its POI system imports glTF, but it is built
-for exteriors and goes through server approval. A data route for dungeon models would need a Bunnyfall loader for a
-mod's mesh files, mapped onto model ids that ARCH3D doesn't use. Deferred until v1 ships.
+Bunnyfall's custom model registry (`world/customModels.js`) is asked before ARCH3D everywhere a model is built, and
+takes dfMeshToModel's shape. The editor writes that shape as data, and one small Bunnyfall module registers it
+(BUNNYFALL_CHANGES.md 3). These models are Bunnyfall-only: DFU draws nothing for an id it does not have.
+
+- **The editor's form** (`src/mesh/`, kept in the project file): points and polygon faces in editor space. Each
+  face has a texture (archive, record) and a Hammer-style alignment: projected onto its plane along axes that ignore
+  its shape (walls run right and down as seen from the front, floors along X and Z), at a scale in units per texel,
+  with an offset and a turn. Neighbouring faces line up. Classic density, measured on the corridors and rooms, is 2
+  units per texel (a 64-texel picture over a 128-unit cell).
+- **Winding**: a face's points go round it so the fan's `cross(b - a, c - a)` points to the side it is seen from, as
+  DFU's ARCH3D triangles do in editor space (measured on every triangle of five classic models).
+- **Ids**: from 7,000,001, issued once by the project (save identity, as block names are). Classic ids stay under
+  100,000; Bunnyfall's own registrations reach 864,111.
+- **Export**: `Models/<id>.json`: triangles in metres (editor space × 0.025 is Unity's frame), unit normals, UVs as
+  DFU makes them (`u / width`, `-(v / height)`, with the base archive's size), and sub-meshes by texture. Texture
+  numbers are kept, so a face in a dungeon set (119, 120, 122, 123, 124, 168) is swapped by the dungeon's table
+  like a classic wall.
+- **No Daggerfall geometry is copied.** A classic model can be shown as a reference (lines) to build to and snap to;
+  nothing of it goes into the model.
 
 ---
 
@@ -502,7 +518,35 @@ Run before every export. Errors block export; warnings don't.
    backwards), secret wall (slides up its own height) and secret door (swings), teleporter, trap, and placing a lever
    or plate on empty space.
 7. **Quests.** Script editor with markers and places; quest-list and places-table export.
-8. Later: custom enemies (§7.2), custom models (§7.3), the Bunnyfall runtime module (§5.3).
+   *Deferred (2026-11-04).* Research done, nothing built. What Bunnyfall does (`src/scenes/quest/questData.js`,
+   `src/systems/quest/place.js`, `questLists.js`, `rrInstall.js`):
+   - Quests are DFU QRC/QBN text. A quest names a fixed dungeon only through a Quests-Places row:
+     `Name, <locationId + 1>, 0x0001, -1` (p1 = location id + 1 means its dungeon; p2 = `0xfaNN` picks quest
+     marker NN). Markers are numbered per kind (spawn 199/11, item 199/18) in the dungeon's block order, then root and
+     object order, so the editor can show each marker's number.
+   - Quests are offered through `QuestList-<name>.txt` rows (group, membership, minReq, flag).
+   - Bunnyfall loads a mod's quests only through code written for that mod: a glob line in `questData.js`,
+     `registerQuestList(name, isOn)`, and `addIntoQuestTables({places: [...]})`. So quests need one Bunnyfall change
+     (load `vendor/bunnyfall-dungeons/Quests/`, register its list, add its places rows from a file the editor writes).
+   - No debug command to start a quest by name was found; testing would go through a quest list group.
+   Plan when picked up: (1) quests in the project and their export plus that change, (2) pickers for places, markers,
+   foes, items, (3) a syntax check.
+8. **Custom models ("B").** The model editor (§7.3).
+   *Stage 1 (2026-11-04): done.* `src/mesh/` (the mesh, triangulation with ear clipping, texture alignment, shapes:
+   box, quad, stairs; extrude, fill, cut, split edge, weld, merge, remove, flip, copy, move/turn/mirror; undo; both
+   JSON forms), custom models in the project file, catalog and caches (placed, snapped and port-checked like classic
+   ones), export, checks (a block placing a model the project lost is an error; faces that are not flat, have no area
+   or repeat a point are warnings). In the viewer (`viewer_mesh.cpp`): File > New model or the Models panel's Custom
+   tab opens the model alone in the four views; points or faces picked by click or box, moved by dragging (corners
+   snap to the grid or to a point near the pointer, the model's own or a reference's) or along an axis handle; a
+   texture picker over the dungeon sets and any archive, and alignment fields (fit, classic, turn). `--check-model`
+   runs it all as clicks would. Bunnyfall's loader is in and checked under Node; not yet seen in the game.
+   *Cuts (2026-11-04):* `cutOpening` (a rectangle in the face's own across/up terms; the face becomes the pieces round
+   it, clipped from the face so any flat face works; an optional reveal lines the hole behind the face) and
+   `sliceFaces` (a grid-line knife). New corners go into every edge they lie on (no T-junction cracks); faces with
+   points along an edge are ear-clipped, so no triangle has zero area.
+   *Stage 2 (next):* the designer's own texture images (PNG into stand-in archives, `addVendorTextures`).
+9. Later: custom enemies (§7.2), the Bunnyfall runtime module (§5.3).
 
 ---
 

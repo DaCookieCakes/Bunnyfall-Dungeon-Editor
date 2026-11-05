@@ -1,7 +1,8 @@
 #pragma once
 
 // A project into Bunnyfall's mod folder (DESIGN.md §6.5): its blocks as patches over their classic templates (or
-// whole, when built from empty), its dungeons as new places. Checked first; a project with errors writes nothing.
+// whole, when built from empty), its dungeons as new places, its custom models as model files (§7.3). Checked
+// first; a project with errors writes nothing.
 
 #include "catalog/catalog.h"
 #include "export/dfu_json.h"
@@ -38,6 +39,9 @@ exporter::Json locationJson(const ProjectDungeon& dungeon, const World& world);
 /// Its file name: `locationnew-bunnyfall-<number>-<slug>-<region>.json` (the `bunnyfall-` part is how Bunnyfall knows
 /// it for an editor dungeon).
 std::string locationFileName(const ProjectDungeon& dungeon);
+
+/// Where a custom model goes in the mod folder: `Models/<id>.json` (Bunnyfall's loader reads every such file).
+std::string modelFileName(std::uint32_t modelId);
 
 /// The doorways a block opens on each edge: the catalog's for a classic block, measured for one of the project's.
 std::optional<catalog::SocketMap> socketsOf(const Project& project, const World& world, const std::string& blockName);

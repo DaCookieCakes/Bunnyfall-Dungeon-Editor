@@ -87,6 +87,10 @@ public:
     [[nodiscard]] const BlockInfo* block(std::string_view name) const;
     [[nodiscard]] const std::vector<BlockInfo>& blocks() const { return blocks_; }
 
+    /// A model ARCH3D does not have (a project's custom model), added or replaced; and taken out again.
+    void setModel(ModelInfo info) { models_.insert_or_assign(info.id, std::move(info)); }
+    bool removeModel(std::uint32_t id) { return models_.erase(id) > 0; }
+
 private:
     std::map<std::uint32_t, ModelInfo> models_;
     std::vector<BlockInfo> blocks_;

@@ -18,8 +18,9 @@ namespace de::app {
 
 namespace {
 
-constexpr const char* kKinds[] = {"Architecture", "Doors", "Props", "All", "Prefabs"};
+constexpr const char* kKinds[] = {"Architecture", "Doors", "Props", "All", "Prefabs", "Custom"};
 constexpr int kPrefabTab = 4;
+constexpr int kCustomTab = 5;
 
 bool kindMatches(int filter, catalog::ModelKind kind) {
     switch (filter) {
@@ -39,6 +40,10 @@ std::string lowered(std::string_view s) {
 } // namespace
 
 void Viewer::armModel(std::uint32_t id) {
+    if (modelEditor_) {
+        status_ = "Close the model editor to place models in the dungeon.";
+        return;
+    }
     if (!edit_) {
         status_ = "Start editing a block first (Properties > Edit this block).";
         return;
@@ -140,6 +145,11 @@ void Viewer::drawTextureVariants() {
     if (!m) return;
     const auto* info = catalog_.model(edit_->block().modelRefs[m->modelIndex].modelIdNum);
     if (!info) return;
+    if (project_.model(info->id)) {
+        ImGui::SeparatorText("Custom model");
+        if (ImGui::Button("Edit model")) openModelEditor(info->id);
+        ImGui::SetItemTooltip("Change its shape and textures; every copy in every block follows");
+    }
 
     if (!info->twins.empty()) {
         ImGui::SeparatorText("Texture variants");
@@ -190,6 +200,72 @@ void Viewer::drawTextureVariants() {
                 ImGui::SetItemTooltip("%d of the selected pieces come in textures %d", count, archive);
             }
         }
+    }
+}
+
+// ---- custom models ----
+
+void Viewer::drawCustomModelList() {
+    if (ImGui::Button("New model")) newCustomModel();
+    ImGui::SetItemTooltip("Build a piece of your own: points and faces with Daggerfall's textures.\n"
+                          "It is kept in the project and exported to Bunnyfall's Models folder.");
+    ImGui::SameLine();
+    ImGui::TextDisabled(edit_ ? "Click to place, double-click to edit." : "Double-click to edit.");
+    if (project_.models().empty()) {
+        ImGui::TextDisabled("None yet.");
+        return;
+    }
+    std::optional<std::uint32_t> remove;
+    if (ImGui::BeginChild("custom", {0, 0}, ImGuiChildFlags_Borders)) {
+        const float side = thumbSize_;
+        const int perRow = std::max(1, int(ImGui::GetContentRegionAvail().x / (side + 16)));
+        int n = 0;
+        for (const auto& m : project_.models()) {
+            const auto* info = catalog_.model(m.id);
+            if (!info) continue;
+            if (n++ % perRow) ImGui::SameLine();
+            ImGui::PushID(static_cast<int>(m.id));
+            ImGui::BeginGroup();
+            const bool armed = placingModel_ == m.id;
+            const bool open = modelEditor_ && modelEditor_->modelId == m.id;
+            if (armed || open) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
+            const GLuint tex = thumbnails_.get(m.id, info->bounds);
+            const bool clicked = tex ? ImGui::ImageButton("m", ImTextureRef(static_cast<ImTextureID>(tex)), {side, side}, {0, 1}, {1, 0})
+                                     : ImGui::Button("...", {side + 8, side + 8});
+            if (armed || open) ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                openModelEditor(m.id);
+            } else if (clicked && edit_ && !modelEditor_) {
+                if (armed) stopPlacing();
+                else armModel(m.id);
+            }
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Edit model")) openModelEditor(m.id);
+                if (ImGui::MenuItem("Delete model")) remove = m.id;
+                ImGui::EndPopup();
+            }
+            if (ImGui::BeginItemTooltip()) {
+                const auto s = info->bounds.size();
+                ImGui::Text("%s  (model %u, %s)", m.label.c_str(), m.id, std::string(catalog::kindName(info->kind)).c_str());
+                ImGui::Text("%.0f x %.0f x %.0f units, %zu faces", s.x, s.y, s.z, m.mesh.faces.size());
+                ImGui::TextDisabled("Right-click to edit or delete");
+                ImGui::EndTooltip();
+            }
+            const auto text = m.label.size() > 12 ? m.label.substr(0, 11) + "..." : m.label;
+            ImGui::TextUnformatted(text.c_str());
+            ImGui::EndGroup();
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+    if (remove) {
+        if (modelEditor_ && modelEditor_->modelId == *remove) closeModelEditor();
+        if (placingModel_ == *remove) stopPlacing();
+        project_.removeModel(*remove);
+        syncCustomModel(*remove);
+        markProjectChanged();
+        issuesStale_ = true;
+        status_ = std::format("Deleted model {}. Blocks that place it show nothing there; the project's checks list them.", *remove);
     }
 }
 
@@ -366,7 +442,7 @@ void Viewer::drawModelPalette() {
         return;
     }
     if (ImGui::BeginTabBar("kinds", ImGuiTabBarFlags_FittingPolicyShrink)) {
-        for (int k = 0; k < 5; ++k) {
+        for (int k = 0; k < 6; ++k) {
             if (ImGui::BeginTabItem(kKinds[k])) {
                 paletteKind_ = k;
                 ImGui::EndTabItem();
@@ -376,6 +452,11 @@ void Viewer::drawModelPalette() {
     }
     if (paletteKind_ == kPrefabTab) {
         drawPrefabList();
+        ImGui::End();
+        return;
+    }
+    if (paletteKind_ == kCustomTab) {
+        drawCustomModelList();
         ImGui::End();
         return;
     }
@@ -393,7 +474,7 @@ void Viewer::drawModelPalette() {
     std::vector<const catalog::ModelInfo*> shown;
     for (const auto& [id, info] : catalog_.models()) {
         if (!kindMatches(paletteKind_, info.kind)) continue;
-        if (info.uses == 0 && !showUnusedModels_) continue;
+        if (info.uses == 0 && !showUnusedModels_ && !project::isCustomModelId(id)) continue;
         if (!want.empty() && std::to_string(id).find(want) == std::string::npos &&
             lowered(info.description).find(want) == std::string::npos) {
             continue;

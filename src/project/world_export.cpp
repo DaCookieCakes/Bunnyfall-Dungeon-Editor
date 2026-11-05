@@ -2,6 +2,8 @@
 
 #include "export/world_data_patch.h"
 #include "formats/climate.h"
+#include "formats/texture.h"
+#include "mesh/mesh_json.h"
 
 #include <algorithm>
 #include <array>
@@ -233,9 +235,31 @@ std::vector<Issue> checkProject(const Project& project, const World& world) {
         if (b.templateName && !world.arena2.blocks.findByName(*b.templateName)) {
             issues.push_back({Issue::Severity::Error, b.name, "Its template " + *b.templateName + " is not in BLOCKS.BSA."});
         }
+        std::set<std::uint32_t> missing;
+        for (const auto& root : b.data.roots) {
+            for (const auto& obj : root.objects) {
+                const auto* m = obj.model();
+                if (!m || m->modelIndex >= b.data.modelRefs.size()) continue;
+                const auto id = b.data.modelRefs[m->modelIndex].modelIdNum;
+                if (isCustomModelId(id) && !project.model(id)) missing.insert(id);
+            }
+        }
+        for (const auto id : missing) {
+            issues.push_back({Issue::Severity::Error, b.name, std::format("It places model {}, which the project no longer has.", id)});
+        }
+    }
+    for (const auto& m : project.models()) {
+        const auto where = std::format("model {} ({})", m.id, m.label.empty() ? "no name" : m.label);
+        if (m.mesh.faces.empty()) issues.push_back({Issue::Severity::Error, where, "It has no faces."});
+        for (auto& problem : mesh::checkMesh(m.mesh)) {
+            problem[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(problem[0])));
+            issues.push_back({Issue::Severity::Warning, where, problem + "."});
+        }
     }
     return issues;
 }
+
+std::string modelFileName(std::uint32_t modelId) { return std::format("Models/{}.json", modelId); }
 
 std::string locationFileName(const ProjectDungeon& d) {
     return std::format("locationnew-bunnyfall-{}-{}-{}.json", d.number, slugOf(d.name), d.regionIndex);
@@ -315,6 +339,19 @@ Result<ExportReport> exportProject(const Project& project, const World& world, c
         }
     }
     for (const auto& d : project.dungeons()) files["WorldData/" + locationFileName(d)] = locationJson(d, world);
+    // Custom models, with their texel UVs divided by each base texture's size as Bunnyfall's own models are.
+    std::map<int, std::optional<formats::TextureArchive>> archives;
+    const mesh::TextureSize sizeOf = [&](int archive, int record) -> std::pair<int, int> {
+        auto it = archives.find(archive);
+        if (it == archives.end()) {
+            auto loaded = formats::TextureArchive::load(world.arena2.dir, archive);
+            it = archives.emplace(archive, loaded ? std::optional(std::move(*loaded)) : std::nullopt).first;
+        }
+        if (!it->second || record < 0 || static_cast<std::size_t>(record) >= it->second->recordCount()) return {64, 64};
+        const auto& r = it->second->record(static_cast<std::size_t>(record));
+        return {r.width, r.height};
+    };
+    for (const auto& m : project.models()) files[modelFileName(m.id)] = mesh::bunnyfallModelJson(m.mesh, m.id, m.label, sizeOf);
 
     for (const auto& [rel, json] : files) {
         if (auto r = writeJsonFile(modDir / rel, json); !r) return std::unexpected(r.error());
@@ -329,10 +366,12 @@ Result<ExportReport> exportProject(const Project& project, const World& world, c
             for (const auto& rel : old.value("files", Json::array())) {
                 if (!rel.is_string() || files.contains(rel.get<std::string>())) continue;
                 const auto path = modDir / rel.get<std::string>();
-                // Only plain names inside the two folders the export writes: a damaged manifest can do no harm.
+                // Only plain names inside the folders the export writes: a damaged manifest can do no harm.
                 const auto relPath = std::filesystem::path(rel.get<std::string>());
                 const auto top = relPath.begin() != relPath.end() ? relPath.begin()->string() : "";
-                if ((top != "WorldData" && top != "WorldDataPatches") || relPath.lexically_normal() != relPath) continue;
+                if ((top != "WorldData" && top != "WorldDataPatches" && top != "Models") || relPath.lexically_normal() != relPath) {
+                    continue;
+                }
                 std::error_code ec;
                 if (std::filesystem::remove(path, ec)) report.removed.push_back(rel.get<std::string>());
             }

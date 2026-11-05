@@ -13,6 +13,8 @@ namespace de::catalog {
 struct Vec3 {
     double x = 0, y = 0, z = 0;
     friend Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+    friend Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+    friend Vec3 operator*(Vec3 a, double s) { return {a.x * s, a.y * s, a.z * s}; }
     friend bool operator==(Vec3, Vec3) = default;
 };
 

@@ -19,6 +19,14 @@ GLuint Thumbnails::get(std::uint32_t modelId, const catalog::Box& bounds) {
     return 0;
 }
 
+void Thumbnails::forget(std::uint32_t modelId) {
+    if (const auto it = done_.find(modelId); it != done_.end()) {
+        if (it->second) glDeleteTextures(1, &it->second);
+        done_.erase(it);
+    }
+    std::erase_if(queue_, [&](const auto& q) { return q.first == modelId; });
+}
+
 void Thumbnails::renderPending(Renderer& renderer, int budget) {
     if (queue_.empty()) return;
     // Newest requests first: what the palette shows now, not what scrolled past.
