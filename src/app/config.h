@@ -1,7 +1,8 @@
 #pragma once
 
 // The editor's own settings file: where Daggerfall's data and Bunnyfall live, and the project file.
-// $XDG_CONFIG_HOME/bunnyfall-dungeon-editor/config.json (~/.config/... when XDG_CONFIG_HOME is unset).
+// $XDG_CONFIG_HOME/bunnyfall-dungeon-editor/config.json (~/.config/... when XDG_CONFIG_HOME is unset); on Windows
+// %APPDATA%/bunnyfall-dungeon-editor/config.json.
 
 #include "core/error.h"
 

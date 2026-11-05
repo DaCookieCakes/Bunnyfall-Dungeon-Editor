@@ -7,8 +7,10 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <format>
+#include <utility>
 
 namespace de::app {
 
@@ -115,6 +117,121 @@ void Viewer::saveProject() {
     }
     projectDirty_ = false;
     status_ = "Saved the project to " + projectFile_.filename().string() + ".";
+}
+
+namespace {
+
+/// "crypts-of-hope.project.json" -> "Crypts Of Hope".
+std::string nameFromFile(const std::filesystem::path& file) {
+    auto stem = file.stem().string();
+    if (stem.ends_with(".project")) stem.resize(stem.size() - 8);
+    std::string name;
+    bool start = true;
+    for (const char c : stem) {
+        if (c == '-' || c == '_' || c == ' ' || c == '.') {
+            if (!name.empty() && name.back() != ' ') name.push_back(' ');
+            start = true;
+        } else {
+            name.push_back(start ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c);
+            start = false;
+        }
+    }
+    while (!name.empty() && name.back() == ' ') name.pop_back();
+    return name.empty() ? "My Dungeons" : name;
+}
+
+} // namespace
+
+void Viewer::projectFilePicked(ProjectDialog purpose, std::filesystem::path file) {
+    file = std::filesystem::absolute(file).lexically_normal();
+    if (purpose == ProjectDialog::SaveAs) {
+        saveProjectAs(std::move(file));
+        return;
+    }
+    if (purpose == ProjectDialog::New && std::filesystem::exists(file)) {
+        status_ = file.filename().string() + " is there already: File > Open project opens it.";
+        return;
+    }
+    if (purpose == ProjectDialog::Open && file == projectFile_) {
+        status_ = file.filename().string() + " is the project already open.";
+        return;
+    }
+    if (hasUnsavedEdits()) {   // ask first (drawConfirmations)
+        pendingProject_ = {purpose, std::move(file)};
+        return;
+    }
+    if (auto r = switchProject(std::move(file), purpose == ProjectDialog::New); !r) status_ = r.error().message;
+}
+
+void Viewer::saveProjectAs(std::filesystem::path file) {
+    if (auto r = project_.save(file); !r) {
+        status_ = "Project not saved: " + r.error().message;
+        return;
+    }
+    projectFile_ = std::move(file);
+    projectDirty_ = false;
+    if (config_) {
+        config_->project = projectFile_;
+        (void)config_->save();
+    }
+    status_ = std::format("Saved the project as {}. It still exports to vendor/{}: give it a folder of its own in the "
+                          "Mod tab if it is to be a mod of its own.",
+                          projectFile_.filename().string(), project_.mod.folder);
+}
+
+Result<void> Viewer::switchProject(std::filesystem::path file, bool fresh) {
+    if (fresh) {
+        project::Project p;
+        p.name = nameFromFile(file);
+        p.mod.author = project_.mod.author;   // most likely the same person
+        p.mod.folder = project::modFolderFor(p.name);
+        if (config_ && !bunnyfallProblem(config_->bunnyfall)) {
+            const auto vendor = config_->bunnyfall / "vendor";
+            const auto base = p.mod.folder;
+            for (int n = 2; std::filesystem::exists(vendor / p.mod.folder); ++n) p.mod.folder = std::format("{}-{}", base, n);
+            if (const auto range = project::freeIdRange(vendor, p.mod.folder)) (void)p.setIdRange(*range);
+        }
+        if (auto r = p.save(file); !r) return std::unexpected(r.error());
+    } else if (auto loaded = project::Project::load(file); !loaded) {
+        return std::unexpected(loaded.error());
+    }
+
+    // Leave the old project.
+    closeModelEditor();
+    endEdit();
+    std::vector<std::uint32_t> oldModels;
+    for (const auto& m : project_.models()) oldModels.push_back(m.id);
+    currentDungeon_ = -1;
+    if (auto r = setProjectFile(file); !r) return r;
+    for (const auto id : oldModels) {
+        if (!project_.model(id)) syncCustomModel(id);   // gone from the catalog and the drawn models
+    }
+    if (config_) {
+        config_->project = projectFile_;
+        (void)config_->save();
+    }
+    refreshOtherMods();
+
+    // What is on screen, read again: the patches are the new mod folder's, the project blocks the new project's.
+    bool readable = true;
+    for (auto& b : scene_.blocks) {
+        auto data = blockSource()(b.name);
+        if (!data) {
+            readable = false;
+            break;
+        }
+        b.data = std::move(*data);
+    }
+    if (readable) {
+        scene::rebuildInstances(scene_);
+        ++sceneStamp_;
+        clearSelection();
+    } else if (const auto daggerfall = findDungeon("Daggerfall")) {
+        if (auto r = openDungeon(*daggerfall); !r) return r;
+    }
+    status_ = std::format("{} {} (exports to {}).", fresh ? "Made the new project" : "Opened", projectFile_.filename().string(),
+                          modDir_ ? modDir_->string() : "nowhere yet: set Bunnyfall in File > Paths");
+    return {};
 }
 
 void Viewer::exportProject() {
@@ -786,6 +903,27 @@ Result<std::string> Viewer::checkProject(const std::filesystem::path& modDir) {
     exportProject();
     log += status_ + "\n";
     if (!std::filesystem::exists(modDir / "WorldData" / project::locationFileName(d))) return fail("no place file written");
+
+    // File > New project, then Open the first one again; the editor's saved settings are left alone.
+    struct Restore {
+        Config*& slot;
+        Config* saved;
+        ~Restore() { slot = saved; }
+    } restore{config_, std::exchange(config_, nullptr)};
+    const auto first = projectFile_;
+    const auto second = modDir / "crypts-of-hope.project.json";
+    std::filesystem::remove(second);
+    if (auto r = switchProject(second, true); !r) return fail("new project: " + r.error().message);
+    if (project_.name != "Crypts Of Hope" || project_.mod.folder != "crypts-of-hope" || !project_.dungeons().empty() ||
+        !std::filesystem::exists(second)) {
+        return fail(std::format("new project: '{}', folder '{}', {} dungeons", project_.name, project_.mod.folder,
+                                project_.dungeons().size()));
+    }
+    log += std::format("new project {} (mod folder {}); the scene held the old project's block, so {} opened\n",
+                       project_.name, project_.mod.folder, scene_.title);
+    if (auto r = switchProject(first, false); !r) return fail("open project: " + r.error().message);
+    if (project_.dungeons().size() != 1 || !project_.block(hallName)) return fail("the first project did not come back");
+    log += "opened " + first.filename().string() + " again: its dungeon and block are back\n";
     return log;
 }
 

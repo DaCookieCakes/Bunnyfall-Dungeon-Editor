@@ -103,6 +103,8 @@ struct ModInfo {
     int idRange = 0;
 };
 
+/// A mod folder name made from a project's name: lower case, words joined by -.
+std::string modFolderFor(std::string_view name);
 /// What is wrong with a mod folder name (it is the mod's id in Bunnyfall: a-z, 0-9 and -), or nothing.
 std::optional<std::string> modFolderProblem(std::string_view folder);
 

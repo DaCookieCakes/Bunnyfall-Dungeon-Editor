@@ -17,6 +17,7 @@
 #include "project/project.h"
 #include "project/world_export.h"
 #include "app/config.h"
+#include "app/setup.h"
 #include "render/render_target.h"
 #include "render/renderer.h"
 #include "render/thumbnails.h"
@@ -561,6 +562,14 @@ private:
     void drawGrid(project::ProjectDungeon& dungeon);
     void drawProjectBlocks();
     void saveProject();
+    /// File > New / Open / Save project as: the dialog's answer, taken in drawUi.
+    void projectFilePicked(ProjectDialog purpose, std::filesystem::path file);
+    /// Saves the project under another name; it is the project from then on.
+    void saveProjectAs(std::filesystem::path file);
+    /// Changes to another project file (a new one, made there first, when `fresh`): the model editor and any block
+    /// edit close, the old project's models leave the catalog, and the scene is read again (or Castle Daggerfall
+    /// opens, when it held the old project's blocks). The choice is remembered for the next start.
+    Result<void> switchProject(std::filesystem::path file, bool fresh);
     void exportProject();
     void markProjectChanged() { projectDirty_ = true; }
     /// Every empty side of a non-cap block gets a classic border cap.
@@ -730,6 +739,7 @@ private:
     std::size_t grabBlock_ = 0;                  // the scene block the grab is measured in
     bool confirmDiscard_ = false;
     bool confirmQuit_ = false;
+    std::optional<std::pair<ProjectDialog, std::filesystem::path>> pendingProject_;   // waits on "save first?"
     bool quit_ = false;
 
     double viewWidth_ = 1, viewHeight_ = 1;

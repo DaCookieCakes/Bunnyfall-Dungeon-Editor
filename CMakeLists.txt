@@ -14,6 +14,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
+# MinGW (the Windows build): std::print's console half lives in libstdc++exp.
+if(MINGW)
+  link_libraries(stdc++exp)
+endif()
+
 # Warnings for our own targets only.
 add_library(de_warnings INTERFACE)
 if(MSVC)
@@ -136,6 +141,8 @@ if(DE_BUILD_APP)
     src/app/config.cpp
     src/app/setup.cpp
   )
+  # Windows: a windowed program, no console behind it (SDL_main.h supplies its WinMain).
+  set_target_properties(dungeon_editor PROPERTIES WIN32_EXECUTABLE TRUE)
   target_link_libraries(dungeon_editor PRIVATE de_render de_catalog de_edit de_logic de_export de_project imgui SDL3::SDL3
                         nlohmann_json_header
                         de_warnings)

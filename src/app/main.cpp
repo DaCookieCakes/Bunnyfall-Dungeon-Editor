@@ -19,6 +19,7 @@
 #include "core/png.h"
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>   // on Windows: the WinMain a windowed (no console) program starts from
 #include <epoxy/gl.h>
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
@@ -88,6 +89,10 @@ bool parse(int argc, char** argv, Options& o) {
 
 int fatal(const std::string& message) {
     std::println(stderr, "error: {}", message);
+#ifdef _WIN32
+    // A windowed program has no console to read stderr from.
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Bunnyfall Dungeon Editor", message.c_str(), nullptr);
+#endif
     return 1;
 }
 
@@ -149,7 +154,7 @@ int screenshot(de::app::Viewer& viewer, const Options& o) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char* argv[]) {
     Options o;
     if (!parse(argc, argv, o)) {
             std::println(stderr, "usage: dungeon_editor [--arena2 DIR] [--dungeon NAME|ID | --block NAME] "

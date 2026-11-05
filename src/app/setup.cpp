@@ -41,6 +41,19 @@ void browseFile(SDL_Window* window, int field, const std::filesystem::path& star
                            location.empty() ? nullptr : location.c_str());
 }
 
+/// A project file picked in a File menu dialog.
+struct PickedProject {
+    std::mutex lock;
+    std::optional<std::pair<ProjectDialog, std::filesystem::path>> picked;
+};
+PickedProject g_project;
+
+void SDLCALL projectPicked(void* userdata, const char* const* files, int) {
+    if (!files || !files[0]) return;
+    std::scoped_lock guard(g_project.lock);
+    g_project.picked = {static_cast<ProjectDialog>(reinterpret_cast<std::intptr_t>(userdata)), files[0]};
+}
+
 bool pathField(const char* label, std::filesystem::path& path, int field, SDL_Window* window, bool isFile) {
     std::string text = path.string();
     char buffer[1024] = {};
@@ -148,6 +161,23 @@ bool drawPathsWindow(SDL_Window* window, Config& config, bool* open) {
     }
     ImGui::End();
     return saved;
+}
+
+void askForProjectFile(SDL_Window* window, ProjectDialog purpose, const std::filesystem::path& start) {
+    static const SDL_DialogFileFilter filter{"Dungeon editor project", "json"};
+    const std::string location = start.empty() ? "" : start.string();
+    void* tag = reinterpret_cast<void*>(static_cast<std::intptr_t>(purpose));
+    const char* at = location.empty() ? nullptr : location.c_str();
+    if (purpose == ProjectDialog::Open) SDL_ShowOpenFileDialog(projectPicked, tag, window, &filter, 1, at, false);
+    else SDL_ShowSaveFileDialog(projectPicked, tag, window, &filter, 1, at);
+}
+
+std::optional<std::pair<ProjectDialog, std::filesystem::path>> takeProjectFile() {
+    std::scoped_lock guard(g_project.lock);
+    auto picked = std::move(g_project.picked);
+    g_project.picked.reset();
+    if (picked && picked->first != ProjectDialog::Open && picked->second.extension() != ".json") picked->second += ".json";
+    return picked;
 }
 
 } // namespace de::app

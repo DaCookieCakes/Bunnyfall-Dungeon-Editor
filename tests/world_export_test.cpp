@@ -155,6 +155,7 @@ TEST_CASE("ARENA2: a project exports its blocks and places, and a re-export tidi
     std::ifstream patchFile(dir.path / "WorldDataPatches" / (copiedName + ".json"));
     REQUIRE(patchFile);
     const auto patch = de::exporter::Json::parse(patchFile);
+    patchFile.close();   // Windows will not replace or delete a file that is open
     CHECK(patch["rebuilds"] == copiedName + ".json");
     CHECK(patch["base"]["block"] == "N0000071.RDB");
     auto rebuilt = de::exporter::rebuildBlockPatch(patch, a->blocks);
@@ -169,6 +170,7 @@ TEST_CASE("ARENA2: a project exports its blocks and places, and a re-export tidi
     std::ifstream in(locationFile);
     REQUIRE(in);
     const auto loc = de::exporter::Json::parse(in);
+    in.close();
     CHECK(loc["Name"] == "The Burrow");
     CHECK(loc["RegionName"] == "Daggerfall");
     CHECK(loc["Climate"]["WorldClimate"] != 223);   // the land's climate, never the sea's

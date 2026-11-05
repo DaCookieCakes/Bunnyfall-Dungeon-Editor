@@ -1,0 +1,85 @@
+# The Windows build: MSYS2's UCRT64 toolchain (GCC, SDL3, libepoxy), the tests, and a zip with every DLL it needs.
+# Run it by hand (Actions > Windows build > Run workflow) for a zip to download, or push a tag like v0.1.0 for a
+# GitHub release (marked pre-release) with the zip attached.
+
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # to publish the release on a tag
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            zip
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-sdl3
+            mingw-w64-ucrt-x86_64-libepoxy
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        # Without ARENA2 the data tests skip themselves; everything else runs.
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || version="dev-${GITHUB_SHA::7}"
+          name="BunnyfallDungeonEditor-${version}-windows-x64"
+          mkdir -p "dist/$name/licenses"
+          cp build/dungeon_editor.exe build/dftool.exe "dist/$name/"
+          strip "dist/$name/"*.exe
+          # Every DLL the programs load from MSYS2 (Windows' own are left out).
+          for exe in build/dungeon_editor.exe build/dftool.exe; do
+            ldd "$exe" | awk '{print $3}' | grep -i '^/ucrt64/' || true
+          done | sort -u | xargs -r -I{} cp {} "dist/$name/"
+          # The editor's own guides, and the licences of what ships with it.
+          cp README.md "dist/$name/"
+          cp -r docs "dist/$name/"
+          for pkg in SDL3 libepoxy gcc-libs libwinpthread; do
+            [[ -d "/ucrt64/share/licenses/$pkg" ]] && cp -r "/ucrt64/share/licenses/$pkg" "dist/$name/licenses/"
+          done
+          imgui=$(find build/_deps -maxdepth 2 -name LICENSE.txt -path '*imgui*' | head -1)
+          json=$(find build/_deps -maxdepth 2 -name LICENSE.MIT -path '*json*' | head -1)
+          [[ -n "$imgui" ]] && cp "$imgui" "dist/$name/licenses/imgui-LICENSE.txt"
+          [[ -n "$json" ]] && cp "$json" "dist/$name/licenses/nlohmann-json-LICENSE.MIT"
+          ls -la "dist/$name"
+          (cd dist && zip -r -9 "$name.zip" "$name")
+          echo "ZIP=dist/$name.zip" >> "$GITHUB_ENV"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAME }}
+          path: ${{ env.ZIP }}
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP }}
+          prerelease: true
+          generate_release_notes: true

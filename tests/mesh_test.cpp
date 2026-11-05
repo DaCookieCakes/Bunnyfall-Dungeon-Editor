@@ -376,6 +376,7 @@ TEST_CASE("ARENA2: export writes each custom model; a block naming a missing one
     REQUIRE(std::filesystem::exists(path));
     std::ifstream in(path);
     const auto j = Json::parse(in);
+    in.close();   // Windows will not delete a file that is open
     CHECK(j["id"] == id);
     CHECK(j["subMeshes"].size() == 3);
     // Removed from the project, the next export takes the file away.

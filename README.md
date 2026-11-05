@@ -25,6 +25,12 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+**Windows** builds with MSYS2's UCRT64 toolchain (`pacman -S mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,sdl3,libepoxy}`,
+then the same three commands in a UCRT64 shell). GitHub Actions does it for you: **Actions > Windows build > Run
+workflow** gives a zip to download, and pushing a tag like `v0.1.0` publishes it as a pre-release
+(`.github/workflows/windows.yml`). The zip holds both programs, their DLLs, these guides and the licences of what ships
+with them; unzip it anywhere and run `dungeon_editor.exe`.
+
 Data tests read the ARENA2 directory from `DE_ARENA2`. CTest defaults it to `../DFData/ARENA2`; pass
 `-DDE_ARENA2=/path/to/ARENA2` to configure another. Without the data, those tests are skipped.
 
@@ -37,7 +43,7 @@ Data tests read the ARENA2 directory from `DE_ARENA2`. CTest defaults it to `../
 ```
 
 On the first start a setup window asks for the ARENA2 folder, the Bunnyfall checkout and the project file, and saves
-them in `~/.config/bunnyfall-dungeon-editor/config.json` (**File > Paths** changes them later). `--arena2` or
+them in `~/.config/bunnyfall-dungeon-editor/config.json` (Windows: `%APPDATA%\bunnyfall-dungeon-editor\config.json`) (**File > Paths** changes them later). `--arena2` or
 `DE_ARENA2` override the saved ARENA2, `--project FILE` the project.
 
 **Help > Keys and mouse** lists every key. The short version: right-drag looks round in 3D (WASD moves), left-click
@@ -47,7 +53,8 @@ picks, double-click opens Properties, right-click opens a menu of what can be do
 ## Where things go
 
 - **The project** (`projects/bunnyfall-dungeons.project.json` by default) holds your own blocks, dungeons and
-  models. Nothing in it touches Daggerfall's own data.
+  models. Nothing in it touches Daggerfall's own data. **File > New / Open / Save project as** change it; each
+  project is a mod of its own.
 - **The mod**: the project exports into Bunnyfall's `vendor/<folder>/`, a mod of its own with its own switch in
   Bunnyfall's settings. The folder, author and id range are in the Project panel's **Mod** tab
   ([PROJECTS.md](docs/PROJECTS.md#the-mod)); `bunnyfall-dungeons` is the default. `--mod DIR` exports elsewhere.

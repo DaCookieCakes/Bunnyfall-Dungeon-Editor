@@ -992,6 +992,35 @@ void Viewer::drawEditPanel() {
 }
 
 void Viewer::drawConfirmations() {
+    if (pendingProject_) ImGui::OpenPopup("Change project?");
+    if (ImGui::BeginPopupModal("Change project?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const auto go = [this] {
+            auto [purpose, file] = std::move(*pendingProject_);
+            pendingProject_.reset();
+            if (auto r = switchProject(std::move(file), purpose == ProjectDialog::New); !r) status_ = r.error().message;
+        };
+        ImGui::Text("%s has unsaved changes.", edit_ && edit_->dirty() ? edit_->name().c_str() : project_.name.c_str());
+        if (ImGui::Button("Save and change")) {
+            if (edit_ && edit_->dirty()) saveEdit();
+            if (projectDirty_) saveProject();
+            if (hasUnsavedEdits()) pendingProject_.reset();   // the save failed: its status says why
+            else go();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Change without saving")) {
+            if (edit_ && edit_->dirty()) discardEdit();
+            projectDirty_ = false;
+            go();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            pendingProject_.reset();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     if (confirmDiscard_) ImGui::OpenPopup("Discard changes?");
     if (ImGui::BeginPopupModal("Discard changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Discard the unsaved changes to %s?", edit_ ? edit_->name().c_str() : "the block");

@@ -10,6 +10,11 @@
 namespace de::app {
 
 std::filesystem::path Config::file() {
+#ifdef _WIN32
+    if (const char* appData = std::getenv("APPDATA"); appData && *appData) {
+        return std::filesystem::path(appData) / "bunnyfall-dungeon-editor" / "config.json";
+    }
+#endif
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
         return std::filesystem::path(xdg) / "bunnyfall-dungeon-editor" / "config.json";
     }

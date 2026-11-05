@@ -34,6 +34,7 @@ void separator() {
 } // namespace
 
 void Viewer::drawUi() {
+    if (auto picked = takeProjectFile()) projectFilePicked(picked->first, std::move(picked->second));
     drawMenuBar();
     drawToolbar();
 
@@ -177,7 +178,12 @@ void Viewer::drawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Save edited block", "Ctrl+S", false, edit_.has_value())) saveEdit();
+        ImGui::Separator();
+        const auto here = projectFile_.parent_path();
+        if (ImGui::MenuItem("New project...")) askForProjectFile(window_, ProjectDialog::New, here);
+        if (ImGui::MenuItem("Open project...")) askForProjectFile(window_, ProjectDialog::Open, here);
         if (ImGui::MenuItem("Save project", nullptr, false, projectDirty_)) saveProject();
+        if (ImGui::MenuItem("Save project as...")) askForProjectFile(window_, ProjectDialog::SaveAs, here);
         if (ImGui::MenuItem("Export to Bunnyfall", nullptr, false, modDir_.has_value())) exportProject();
         ImGui::Separator();
         if (ImGui::MenuItem("New model")) newCustomModel();

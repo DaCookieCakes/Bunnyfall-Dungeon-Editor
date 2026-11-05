@@ -4,6 +4,7 @@
 #include "mesh/mesh_json.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <format>
 #include <fstream>
@@ -31,6 +32,19 @@ std::uint32_t ProjectDungeon::mapId() const {
 int ProjectDungeon::globalNumber() const { return idRange * kDungeonsPerRange + number; }
 std::uint16_t ProjectDungeon::exteriorLocationId() const { return static_cast<std::uint16_t>(kFirstLocationId + 2 * globalNumber()); }
 std::uint16_t ProjectDungeon::dungeonLocationId() const { return static_cast<std::uint16_t>(kFirstLocationId + 2 * globalNumber() + 1); }
+
+std::string modFolderFor(std::string_view name) {
+    std::string folder;
+    for (const char c : name) {
+        const auto u = static_cast<unsigned char>(c);
+        if (std::isalnum(u) && u < 128) folder.push_back(static_cast<char>(std::tolower(u)));
+        else if (!folder.empty() && folder.back() != '-') folder.push_back('-');
+    }
+    while (!folder.empty() && folder.back() == '-') folder.pop_back();
+    if (folder.size() > 64) folder.resize(64);
+    while (!folder.empty() && folder.back() == '-') folder.pop_back();
+    return folder.empty() ? "my-dungeons" : folder;
+}
 
 std::optional<std::string> modFolderProblem(std::string_view folder) {
     if (folder.empty()) return "a mod needs a folder name";

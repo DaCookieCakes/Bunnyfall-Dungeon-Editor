@@ -38,5 +38,10 @@ Features row and an online room key (`src/systems/editorMods.js`; Bunnyfall chan
 (another mod), and an id range another editor mod uses; it warns when two mods ship the same block file (Bunnyfall
 loads only one) and when the Bunnyfall checkout is too old to load a mod of another name.
 
-A second mod is a second project: point **File > Paths** at a new project file (it is made when first saved), give it
-its folder, and restart. `--project FILE` does the same for one run; `--mod DIR` exports somewhere else entirely.
+**File > New project...** starts another mod: a new project file, named for its file (`crypts-of-hope.project.json`
+is "Crypts Of Hope", exporting to `vendor/crypts-of-hope`, in the lowest free id range). **Open project...** changes to
+another, **Save project as...** keeps a copy under a new name and goes on in it (the copy still exports to the same
+folder until you give it its own). Changing project asks first when something is unsaved, closes the model editor
+and any block edit, and reads the views again; if they showed the old project's blocks, Castle Daggerfall opens. The
+editor remembers the project for the next start. `--project FILE` picks one for a single run; `--mod DIR` exports
+somewhere else entirely.
