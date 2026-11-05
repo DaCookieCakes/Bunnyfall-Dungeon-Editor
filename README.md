@@ -26,10 +26,13 @@ ctest --test-dir build --output-on-failure
 ```
 
 **Windows** builds with MSYS2's UCRT64 toolchain (`pacman -S mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,sdl3,libepoxy}`,
-then the same three commands in a UCRT64 shell). GitHub Actions does it for you: **Actions > Windows build > Run
-workflow** gives a zip to download, and pushing a tag like `v0.1.0` publishes it as a pre-release
-(`.github/workflows/windows.yml`). The zip holds both programs, their DLLs, these guides and the licences of what ships
-with them; unzip it anywhere and run `dungeon_editor.exe`.
+then the same three commands in a UCRT64 shell).
+
+**Release builds** come from GitHub Actions (`.github/workflows/build.yml`): **Actions > Build > Run workflow** gives a
+Windows zip and a Linux tarball to download, and pushing a tag like `v0.1.0` publishes both as a pre-release. Each
+holds both programs, the libraries they need, these guides and the licences of what ships with them: unpack it
+anywhere and run `dungeon_editor` (`.exe` on Windows). The Linux one is built on Ubuntu 24.04 with SDL3 and libepoxy
+in its `lib/`, so it runs on that and anything newer; `tools/package-linux.sh` makes the same tarball locally.
 
 Data tests read the ARENA2 directory from `DE_ARENA2`. CTest defaults it to `../DFData/ARENA2`; pass
 `-DDE_ARENA2=/path/to/ARENA2` to configure another. Without the data, those tests are skipped.

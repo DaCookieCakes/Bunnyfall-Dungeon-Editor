@@ -4,3 +4,4 @@ __pycache__/
 imgui.ini
 projects/
 dist/
+build-linux/

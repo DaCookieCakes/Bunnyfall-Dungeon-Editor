@@ -7,6 +7,11 @@ code (`grep -rn BUNNYFALL src` finds them, alongside the fork's other tagged cha
 Before the PR: run `npx eslint` on the changed files, `node tools/l10nExtract.mjs`, and `npm run build`
 (`npx vite build` in a copy that is not a git checkout).
 
+**Pull request:** changes 1-4 went up as https://github.com/Killbow/bunnyfall/pull/7 (2026-11-05), from
+`DaCookieCakes/bunnyfall` branch `editor-modifications`, applied over upstream `main` (not copied from the local
+copy, which is behind upstream). The vendored `bunnyfall-dungeons` folder ships empty there: only its README; the
+local copy's test patch (S0000999) and exported dungeons stay local.
+
 ## Made
 
 ### 1. The `bunnyfall-dungeons` mod (2026-11-02)
