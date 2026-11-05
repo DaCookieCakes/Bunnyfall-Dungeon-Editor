@@ -16,8 +16,8 @@ struct Config {
     std::filesystem::path bunnyfall;   ///< The Bunnyfall checkout (empty: no export).
     std::filesystem::path project;     ///< The project file.
 
-    /// The mod folder the editor exports to, inside Bunnyfall.
-    [[nodiscard]] std::filesystem::path modFolder() const { return bunnyfall / "vendor" / "bunnyfall-dungeons"; }
+    /// A mod folder inside Bunnyfall (a project's mod is one of them).
+    [[nodiscard]] std::filesystem::path modFolder(const std::string& folder) const { return bunnyfall / "vendor" / folder; }
 
     static std::filesystem::path file();
     /// The saved settings, or nothing if there are none yet.

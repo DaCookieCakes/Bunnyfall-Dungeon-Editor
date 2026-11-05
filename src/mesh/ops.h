@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <set>
 #include <vector>
@@ -70,6 +71,22 @@ std::vector<std::uint32_t> addStairs(Mesh& mesh, const catalog::Box& box, int st
 /// Points the faces share with faces left behind are copied, so those stay where they were. Answers the new faces.
 std::vector<std::uint32_t> extrude(Mesh& mesh, const FaceSet& faces, double distance);
 
+/// An extrusion made with nothing moved yet, for the pointer to pull out: the new faces, the points that are to move
+/// (the copies), and for edges the far edges (the copies' edges).
+struct Extrusion {
+    std::vector<std::uint32_t> faces;
+    PointSet moving;
+    EdgeSet edges;
+};
+/// As extrude at no distance: the faces keep their indices and take the copies of their points, side faces join them
+/// to where they were.
+Extrusion extrudeFacesInPlace(Mesh& mesh, const FaceSet& faces);
+/// As extendEdges with no offset: a face from each edge to its copy.
+Extrusion extrudeEdgesInPlace(Mesh& mesh, const EdgeSet& edges);
+/// Points: the edges of faces with both ends among them grow as edges do; a point on no such edge is copied on its own
+/// (no face uses it until one is filled to it).
+Extrusion extrudePointsInPlace(Mesh& mesh, const PointSet& points);
+
 /// A new face through `points`, ordered round them on their common plane and turned to face `viewer`. Nullopt when
 /// fewer than three points or they lie on one line.
 std::optional<std::uint32_t> fillFace(Mesh& mesh, const PointSet& points, FaceTexture texture, Vec3 viewer);
@@ -113,6 +130,10 @@ std::vector<std::uint32_t> sliceFaces(Mesh& mesh, const FaceSet& faces, int axis
 /// they became (its index after unused points are removed).
 std::optional<std::uint32_t> weld(Mesh& mesh, const PointSet& points, Vec3 at);
 
+/// Each of `moved` that lands within `tolerance` of a point not in `moved` becomes that point (a corner snapped onto a
+/// corner). Faces lose the repeats; one left with under three points goes. Answers how many points went.
+std::size_t mergeOnto(Mesh& mesh, const PointSet& moved, double tolerance);
+
 /// Points closer than `tolerance` become one. Answers how many points went.
 std::size_t mergeByDistance(Mesh& mesh, double tolerance);
 
@@ -138,6 +159,19 @@ PointSet pointsOf(const Mesh& mesh, const FaceSet& faces);
 void movePoints(Mesh& mesh, const PointSet& points, Vec3 offset);
 /// Turned about the vertical line through `centre`, clockwise seen from above (as models turn in a block).
 void turnPoints(Mesh& mesh, const PointSet& points, Vec3 centre, double degrees);
+/// Turned about the editor axis `axis` (0 X, 1 Y, 2 Z) through `centre`, as catalog::axisRotation turns: X from Y
+/// toward Z, Y from Z toward X (turnPoints' way), Z from X toward Y.
+void turnPointsAbout(Mesh& mesh, const PointSet& points, Vec3 centre, int axis, double degrees);
+
+/// For sliding: each point's neighbours along an edge that are not in `points` themselves (so a face slides along
+/// the edges leading away from it, not across itself).
+std::map<std::uint32_t, std::vector<std::uint32_t>> slideNeighbours(const Mesh& mesh, const PointSet& points);
+
+/// Slides points along their edges: each point in `start` (where it was) goes `share` (0..1) of the way toward the
+/// neighbour (from `neighbours`) whose edge runs most along `way`. A point with no edge running `way`'s way stays.
+void slidePoints(Mesh& mesh, const std::map<std::uint32_t, Vec3>& start,
+                 const std::map<std::uint32_t, std::vector<std::uint32_t>>& neighbours, Vec3 way, double share);
+
 /// Scaled about `centre`, each axis by its own factor. Faces keep facing their way, even when one factor is negative
 /// (a mirror turns them round).
 void scalePoints(Mesh& mesh, const PointSet& points, Vec3 centre, Vec3 factors);

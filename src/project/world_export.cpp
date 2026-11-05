@@ -262,7 +262,7 @@ std::vector<Issue> checkProject(const Project& project, const World& world) {
 std::string modelFileName(std::uint32_t modelId) { return std::format("Models/{}.json", modelId); }
 
 std::string locationFileName(const ProjectDungeon& d) {
-    return std::format("locationnew-bunnyfall-{}-{}-{}.json", d.number, slugOf(d.name), d.regionIndex);
+    return std::format("locationnew-bunnyfall-{}-{}-{}.json", d.globalNumber(), slugOf(d.name), d.regionIndex);
 }
 
 Json locationJson(const ProjectDungeon& d, const World& world) {
@@ -320,9 +320,137 @@ Json locationJson(const ProjectDungeon& d, const World& world) {
     };
 }
 
+Json modManifestJson(const Project& project) {
+    return {{"format", kModManifestFormat},
+            {"title", project.name},
+            {"author", project.mod.author},
+            {"description", project.mod.description},
+            {"idRange", project.mod.idRange},
+            {"written by", "Bunnyfall Dungeon Editor"}};
+}
+
+namespace {
+
+std::optional<Json> readJson(const std::filesystem::path& file) {
+    std::ifstream in(file);
+    if (!in) return std::nullopt;
+    auto j = Json::parse(in, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return std::nullopt;
+    return j;
+}
+
+/// The names of the block and place files a mod folder ships.
+std::set<std::string> worldDataNames(const std::filesystem::path& modDir) {
+    std::set<std::string> names;
+    for (const auto* sub : {"WorldData", "WorldDataPatches"}) {
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(modDir / sub, ec)) {
+            if (e.path().extension() == ".json") names.insert(e.path().filename().string());
+        }
+    }
+    return names;
+}
+
+/// Whether `modDir` sits in a Bunnyfall vendor/ folder (and not, say, a check's scratch folder).
+bool inVendor(const std::filesystem::path& modDir) { return modDir.parent_path().filename() == "vendor"; }
+
+std::string readmeText(const Project& project) {
+    std::string text = std::format("# {}\n\n", project.name);
+    if (!project.mod.description.empty()) text += project.mod.description + "\n\n";
+    text += std::format(
+        "By {}. Made with the Bunnyfall Dungeon Editor, which writes everything in this folder: edit the project, not "
+        "these files.\n\n"
+        "- `{}` - the mod's title, author and id range. Bunnyfall gives every folder with one a switch of its own "
+        "(Settings > Gameplay > Dungeons; `src/systems/editorMods.js`).\n"
+        "- `WorldDataPatches/*.json` - dungeon blocks as changes over classic ones, rebuilt from the player's own "
+        "BLOCKS.BSA. No Daggerfall data is shipped.\n"
+        "- `WorldData/*.json` - blocks built from nothing, and the mod's own places (`locationnew-bunnyfall-*`).\n"
+        "- `Models/<id>.json` - models from the editor's model editor (Bunnyfall only; Daggerfall Unity cannot load "
+        "them).\n\n"
+        "Offline the mod also needs Replace Game Artwork (Asset Injection), like every world-data mod; online the room "
+        "owns its switch.\n",
+        project.mod.author.empty() ? "Bunnyfall" : project.mod.author, kModManifestName);
+    return text;
+}
+
+} // namespace
+
+std::vector<EditorMod> editorModsIn(const std::filesystem::path& vendorDir) {
+    std::vector<EditorMod> mods;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(vendorDir, ec)) {
+        if (!e.is_directory()) continue;
+        const auto j = readJson(e.path() / kModManifestName);
+        if (!j || j->value("format", "") != kModManifestFormat) continue;
+        mods.push_back({e.path().filename().string(), j->value("title", ""), j->value("idRange", 0)});
+    }
+    std::ranges::sort(mods, {}, &EditorMod::folder);
+    return mods;
+}
+
+std::optional<int> freeIdRange(const std::filesystem::path& vendorDir, std::string_view ownFolder) {
+    std::set<int> taken;
+    for (const auto& m : editorModsIn(vendorDir)) {
+        if (m.folder != ownFolder) taken.insert(m.idRange);
+    }
+    for (int r = 0; r < kIdRanges; ++r) {
+        if (!taken.contains(r)) return r;
+    }
+    return std::nullopt;
+}
+
+std::vector<Issue> checkModFolder(const Project& project, const std::filesystem::path& modDir) {
+    std::vector<Issue> issues;
+    const std::string where = "Mod";
+    const auto folder = modDir.filename().string();
+    if (inVendor(modDir)) {
+        if (const auto problem = modFolderProblem(folder)) issues.push_back({Issue::Severity::Error, where, *problem + "."});
+    }
+    // Never write into a mod the editor did not make.
+    std::error_code ec;
+    const bool ours = std::filesystem::exists(modDir / kManifest) || std::filesystem::exists(modDir / kModManifestName);
+    if (!ours && inVendor(modDir) && std::filesystem::exists(modDir, ec) && !std::filesystem::is_empty(modDir, ec) && folder != "bunnyfall-dungeons") {
+        issues.push_back({Issue::Severity::Error, where,
+                          std::format("{} holds files the editor did not write (another mod?): give the mod another folder.",
+                                      modDir.string())});
+    }
+    if (!inVendor(modDir)) return issues;
+
+    const auto vendor = modDir.parent_path();
+    std::set<std::string> mine;
+    for (const auto& b : project.blocks()) mine.insert(b.name + ".json");
+    for (const auto& name : worldDataNames(modDir)) {
+        if (name.ends_with(".RDB.json")) mine.insert(name);   // classic blocks patched in the block editor
+    }
+    for (const auto& other : editorModsIn(vendor)) {
+        if (other.folder == folder) continue;
+        if (other.idRange == project.mod.idRange) {
+            issues.push_back({Issue::Severity::Error, where,
+                              std::format("The mod {} uses id range {} too: their blocks and places would be one another's. "
+                                          "Pick another range in the Mod tab (only while this project has numbered nothing).",
+                                          other.folder, other.idRange)});
+        }
+        for (const auto& name : worldDataNames(vendor / other.folder)) {
+            if (mine.contains(name)) {
+                issues.push_back({Issue::Severity::Warning, where,
+                                  std::format("{} is in the mod {} as well: Bunnyfall loads only one of them.", name, other.folder)});
+            }
+        }
+    }
+    const auto bunnyfall = vendor.parent_path();
+    if (folder != "bunnyfall-dungeons" && std::filesystem::exists(bunnyfall / "src") &&
+        !std::filesystem::exists(bunnyfall / "src" / "systems" / "editorMods.js")) {
+        issues.push_back({Issue::Severity::Warning, where,
+                          "This Bunnyfall only loads the editor's bunnyfall-dungeons folder: a mod of another name needs "
+                          "src/systems/editorMods.js (BUNNYFALL_CHANGES.md, change 4)."});
+    }
+    return issues;
+}
+
 Result<ExportReport> exportProject(const Project& project, const World& world, const std::filesystem::path& modDir) {
     ExportReport report;
     report.issues = checkProject(project, world);
+    for (auto& issue : checkModFolder(project, modDir)) report.issues.push_back(std::move(issue));
     if (report.hasErrors()) return report;
 
     // Everything this export writes, by path relative to the mod folder.
@@ -352,15 +480,29 @@ Result<ExportReport> exportProject(const Project& project, const World& world, c
         return {r.width, r.height};
     };
     for (const auto& m : project.models()) files[modelFileName(m.id)] = mesh::bunnyfallModelJson(m.mesh, m.id, m.label, sizeOf);
+    files[std::string(kModManifestName)] = modManifestJson(project);
 
     for (const auto& [rel, json] : files) {
         if (auto r = writeJsonFile(modDir / rel, json); !r) return std::unexpected(r.error());
         report.written.push_back(rel);
     }
 
-    // Files the last export wrote that this one does not: a renamed, removed or re-based block or dungeon.
     Json old;
     if (std::ifstream in(modDir / kManifest); in) old = Json::parse(in, nullptr, false);
+
+    // A README, unless the folder has one the editor did not write.
+    bool readme = !std::filesystem::exists(modDir / "README.md");
+    if (old.is_object()) {
+        for (const auto& rel : old.value("files", Json::array())) readme = readme || rel == "README.md";
+    }
+    if (readme) {
+        std::ofstream out(modDir / "README.md");
+        out << readmeText(project);
+        if (!out) return fail("cannot write " + (modDir / "README.md").string());
+        report.written.push_back("README.md");
+    }
+
+    // Files the last export wrote that this one does not: a renamed, removed or re-based block or dungeon.
     {
         if (old.is_object()) {
             for (const auto& rel : old.value("files", Json::array())) {
@@ -379,6 +521,7 @@ Result<ExportReport> exportProject(const Project& project, const World& world, c
     }
     Json manifest = {{"written by", "Bunnyfall Dungeon Editor"}, {"project", project.name}, {"files", Json::array()}};
     for (const auto& [rel, _] : files) manifest["files"].push_back(rel);
+    if (readme) manifest["files"].push_back("README.md");
     if (auto r = writeJsonFile(modDir / kManifest, manifest); !r) return std::unexpected(r.error());
     return report;
 }

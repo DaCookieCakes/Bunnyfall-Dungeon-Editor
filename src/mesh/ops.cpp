@@ -195,9 +195,12 @@ std::vector<std::uint32_t> addStairs(Mesh& mesh, const catalog::Box& box, int st
     return made;
 }
 
-std::vector<std::uint32_t> extrude(Mesh& mesh, const FaceSet& faces, double distance) {
+namespace {
+
+// extrude, also at no distance (the start of a drag out).
+std::vector<std::uint32_t> extrudeFaces(Mesh& mesh, const FaceSet& faces, double distance) {
     std::vector<std::uint32_t> made;
-    if (distance == 0 || faces.empty()) return made;
+    if (faces.empty()) return made;
     for (const auto f : faces) {
         if (f >= mesh.faces.size()) return made;
     }
@@ -241,11 +244,23 @@ std::vector<std::uint32_t> extrude(Mesh& mesh, const FaceSet& faces, double dist
     return made;
 }
 
-std::optional<std::uint32_t> fillFace(Mesh& mesh, const PointSet& points, FaceTexture texture, Vec3 viewer) {
-    if (points.size() < 3) return std::nullopt;
-    for (const auto p : points) {
+} // namespace
+
+std::vector<std::uint32_t> extrude(Mesh& mesh, const FaceSet& faces, double distance) {
+    if (distance == 0) return {};
+    return extrudeFaces(mesh, faces, distance);
+}
+
+std::optional<std::uint32_t> fillFace(Mesh& mesh, const PointSet& given, FaceTexture texture, Vec3 viewer) {
+    // One point for each place: corners snapped onto each other are often picked together, and a face through both
+    // would have an edge of no length.
+    PointSet points;
+    for (const auto p : given) {
         if (p >= mesh.points.size()) return std::nullopt;
+        const bool stacked = std::ranges::any_of(points, [&](std::uint32_t q) { return length(mesh.points[p] - mesh.points[q]) < 1e-3; });
+        if (!stacked) points.insert(p);
     }
+    if (points.size() < 3) return std::nullopt;
     Vec3 c;
     for (const auto p : points) c = c + mesh.points[p];
     c = c * (1.0 / double(points.size()));
@@ -451,9 +466,11 @@ std::optional<Vec3> outwardOf(const Mesh& mesh, Edge edge) {
     return out;
 }
 
-std::vector<std::uint32_t> extendEdges(Mesh& mesh, const EdgeSet& edges, Vec3 offset) {
+namespace {
+
+// extendEdges, also with no offset (the start of a drag out).
+std::vector<std::uint32_t> growEdges(Mesh& mesh, const EdgeSet& edges, Vec3 offset) {
     std::vector<std::uint32_t> made;
-    if (length(offset) == 0) return made;
     std::map<std::uint32_t, std::uint32_t> moved;   // points edges share move once
     auto movedOf = [&](std::uint32_t p) {
         auto [it, fresh] = moved.try_emplace(p, static_cast<std::uint32_t>(mesh.points.size()));
@@ -487,6 +504,57 @@ std::vector<std::uint32_t> extendEdges(Mesh& mesh, const EdgeSet& edges, Vec3 of
         made.push_back(static_cast<std::uint32_t>(mesh.faces.size() - 1));
     }
     return made;
+}
+
+} // namespace
+
+std::vector<std::uint32_t> extendEdges(Mesh& mesh, const EdgeSet& edges, Vec3 offset) {
+    if (length(offset) == 0) return {};
+    return growEdges(mesh, edges, offset);
+}
+
+Extrusion extrudeFacesInPlace(Mesh& mesh, const FaceSet& faces) {
+    Extrusion out;
+    if (std::ranges::any_of(faces, [&](std::uint32_t f) { return f >= mesh.faces.size(); })) return out;
+    out.faces = extrudeFaces(mesh, faces, 0);
+    out.moving = pointsOf(mesh, faces);
+    return out;
+}
+
+Extrusion extrudeEdgesInPlace(Mesh& mesh, const EdgeSet& edges) {
+    Extrusion out;
+    out.faces = growEdges(mesh, edges, {});
+    for (const auto f : out.faces) {
+        const auto& p = mesh.faces[f].points;
+        out.moving.insert(p[2]);
+        out.moving.insert(p[3]);
+        out.edges.insert(edgeOf(p[2], p[3]));
+    }
+    return out;
+}
+
+Extrusion extrudePointsInPlace(Mesh& mesh, const PointSet& points) {
+    // The edges of faces with both ends chosen grow as edges do.
+    EdgeSet edges;
+    for (const auto& edge : edgesOf(mesh)) {
+        if (points.contains(edge.first) && points.contains(edge.second)) edges.insert(edge);
+    }
+    auto out = extrudeEdgesInPlace(mesh, edges);
+    // Their far ends are the chosen points' copies; points on no such edge are copied loose.
+    std::map<std::uint32_t, std::uint32_t> copyOf;
+    for (const auto f : out.faces) {
+        const auto& p = mesh.faces[f].points;   // b, a, a', b'
+        copyOf[p[1]] = p[2];
+        copyOf[p[0]] = p[3];
+    }
+    for (const auto p : points) {
+        if (p >= mesh.points.size() || copyOf.contains(p)) continue;
+        const auto copy = static_cast<std::uint32_t>(mesh.points.size());
+        mesh.points.push_back(mesh.points[p]);
+        copyOf[p] = copy;
+        out.moving.insert(copy);
+    }
+    return out;
 }
 
 bool dissolveEdge(Mesh& mesh, Edge edge) {
@@ -545,6 +613,28 @@ std::optional<std::uint32_t> weld(Mesh& mesh, const PointSet& points, Vec3 at) {
     tidyFaces(mesh);
     const auto remap = removeUnusedPoints(mesh);
     return remap[kept];
+}
+
+std::size_t mergeOnto(Mesh& mesh, const PointSet& moved, double tolerance) {
+    std::vector<std::uint32_t> to(mesh.points.size());
+    for (std::uint32_t i = 0; i < to.size(); ++i) to[i] = i;
+    std::size_t merged = 0;
+    for (const auto p : moved) {
+        if (p >= mesh.points.size()) continue;
+        for (std::uint32_t q = 0; q < mesh.points.size(); ++q) {
+            if (q == p || moved.contains(q) || length(mesh.points[p] - mesh.points[q]) > tolerance) continue;
+            to[p] = q;
+            ++merged;
+            break;
+        }
+    }
+    if (merged == 0) return 0;
+    for (auto& f : mesh.faces) {
+        for (auto& p : f.points) p = to[p];
+    }
+    tidyFaces(mesh);
+    removeUnusedPoints(mesh);
+    return merged;
 }
 
 std::size_t mergeByDistance(Mesh& mesh, double tolerance) {
@@ -657,6 +747,43 @@ void turnPoints(Mesh& mesh, const PointSet& points, Vec3 centre, double degrees)
         const Vec3 d = mesh.points[p] - centre;
         // North (+Z) toward east (+X): clockwise seen from above.
         mesh.points[p] = centre + Vec3{d.x * c + d.z * s, d.y, -d.x * s + d.z * c};
+    }
+}
+
+void turnPointsAbout(Mesh& mesh, const PointSet& points, Vec3 centre, int axis, double degrees) {
+    const auto r = catalog::axisRotation(axis, degrees);
+    for (const auto p : points) {
+        if (p < mesh.points.size()) mesh.points[p] = centre + r * (mesh.points[p] - centre);
+    }
+}
+
+std::map<std::uint32_t, std::vector<std::uint32_t>> slideNeighbours(const Mesh& mesh, const PointSet& points) {
+    std::map<std::uint32_t, std::vector<std::uint32_t>> out;
+    for (const auto& [a, b] : edgesOf(mesh)) {
+        if (points.contains(a) && !points.contains(b)) out[a].push_back(b);
+        if (points.contains(b) && !points.contains(a)) out[b].push_back(a);
+    }
+    return out;
+}
+
+void slidePoints(Mesh& mesh, const std::map<std::uint32_t, Vec3>& start,
+                 const std::map<std::uint32_t, std::vector<std::uint32_t>>& neighbours, Vec3 way, double share) {
+    const Vec3 w = normalised(way);
+    for (const auto& [p, from] : start) {
+        if (p >= mesh.points.size()) continue;
+        mesh.points[p] = from;
+        const auto it = neighbours.find(p);
+        if (it == neighbours.end()) continue;
+        std::optional<std::uint32_t> along;
+        double most = 1e-6;   // only edges running at least a little the right way
+        for (const auto q : it->second) {
+            const double d = dot(normalised(mesh.points[q] - from), w);
+            if (d > most) {
+                most = d;
+                along = q;
+            }
+        }
+        if (along) mesh.points[p] = from + (mesh.points[*along] - from) * share;
     }
 }
 

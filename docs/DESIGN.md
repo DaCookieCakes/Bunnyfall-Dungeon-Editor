@@ -345,6 +345,13 @@ Measured against Bunnyfall's loader (`worldDataReplacement.js`) and a classic lo
 - **Location ids**: classic ones go up to 51000 and Bunnyfall's arena undercroft is 55398. Editor places take
   `60000 + 2n` for the exterior and `60001 + 2n` for the dungeon, which names its exterior (`ExteriorLocationId`).
   The dungeon's id seeds its texture table and random enemies.
+- **Id ranges** (2026-11-05): a project is a mod of its own (`vendor/<folder>/`, marked by `dungeon-editor.mod.json`),
+  and several can sit side by side, so the spaces above are split eight ways. Range `r` names blocks
+  `r*249+1 .. r*249+249` (save bases follow the number), issues models from `7,000,000 + r*124,999 + 1`, and gives
+  dungeon `n` the location ids `60000 + 2(148r + n)` (and the file name `locationnew-bunnyfall-<148r + n>-...`). Map
+  ids keep `1900 + n`: they take the pixel in, and two places never share a pixel. Range 0 is the numbering from
+  before ranges. The range is fixed once a number is out; the export refuses a range another editor mod in `vendor/`
+  uses.
 - **Position**: header `X = x * 32768 + 16384`, `Y = (499 - y) * 32768 + 16384` (world units; the map pixel is
   `X / 32768`, `499 - Y / 32768`); `Longitude = x * 128 + 64`, `Latitude = (499 - y) * 128 + 64`. The pixel must
   be inside the region, on land, and hold no other location. `Politic` = region + 128.
@@ -492,6 +499,12 @@ Run before every export. Errors block export; warnings don't.
    (`project/prefab.*`): a selection saved as a one-root RDB block in World Data JSON under `prefabs/`, anchored at the
    middle of its bottom, placed turned and snapped with its internal action links remapped. Outliner
    (`viewer_outliner.cpp`) and framing the selection (F).
+   *Vertex snap (2026-11-05):* a toolbar toggle (V). A model being placed (or a prefab), moved with G or dragged
+   goes onto a still model where an open rim of each (a loop of edges only one face uses: a corridor's mouth, a cave
+   tile's side) matches point for point (`src/edit/vertex_snap.*`, `viewer_snap.cpp`). Rims within 48 screen points
+   or 64 units count; the shortest move wins; models on the same side of the rim (one over the other) don't. The rim
+   met is marked in every view. Measured on classic blocks: 88% of architecture pieces meet a neighbour this way,
+   cave tiles 94-98%.
 6. **Logic graph.** Graph editor and compiler to action chains; door and lock settings.
    *Plan (2026-11-04):* chains can't branch, so instead of a free node canvas: (1) see the logic that is there,
    (2) edit chains (trigger and action pickers, link by clicking, preview of moves), (3) doors and locks with common
@@ -552,6 +565,14 @@ Run before every export. Errors block export; warnings don't.
    *Edges (2026-11-04):* a third pick kind (1 points, 2 edges, 3 faces): `edgesOf`, `extendEdges` (grow a face from
    an edge, wound to match the face beside it), `outwardOf`, `dissolveEdge` (two coplanar faces into one),
    `connectEdges` (cut a face between two edges' middles).
+   *Extrude and the menu (2026-11-05):* E (and the menu) in all three pick kinds: `extrudeFacesInPlace`,
+   `extrudeEdgesInPlace`, `extrudePointsInPlace` make the geometry at no distance and the G move pulls the copies out,
+   all one MeshEdit gesture, so cancelling or putting it down unmoved leaves nothing (and the selection comes back).
+   In 3D, level faces move up and down. A right-click away from everything, with something picked, opens the
+   selection's menu with empty space's items in a submenu.
+   *Tools (2026-11-04):* Move / Turn / Scale handles (R) and typed turns and factors; G grabs with the pointer, G G
+   slides along the edges (`slideNeighbours`, `slidePoints`: each point toward the neighbour whose edge runs most the
+   pointer's way, a share of the way, clamped to the edge's end); `turnPointsAbout` for any axis.
    *Stage 2 (next):* the designer's own texture images (PNG into stand-in archives, `addVendorTextures`).
 9. Later: custom enemies (§7.2), the Bunnyfall runtime module (§5.3).
 

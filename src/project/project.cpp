@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <format>
 #include <fstream>
 
 namespace de::project {
@@ -27,8 +28,29 @@ std::string makeBlockName(char letter, int number) {
 std::uint32_t ProjectDungeon::mapId() const {
     return (static_cast<std::uint32_t>(kFirstMapIdHigh + number) << 20) | static_cast<std::uint32_t>(pixelId());
 }
-std::uint16_t ProjectDungeon::exteriorLocationId() const { return static_cast<std::uint16_t>(kFirstLocationId + 2 * number); }
-std::uint16_t ProjectDungeon::dungeonLocationId() const { return static_cast<std::uint16_t>(kFirstLocationId + 2 * number + 1); }
+int ProjectDungeon::globalNumber() const { return idRange * kDungeonsPerRange + number; }
+std::uint16_t ProjectDungeon::exteriorLocationId() const { return static_cast<std::uint16_t>(kFirstLocationId + 2 * globalNumber()); }
+std::uint16_t ProjectDungeon::dungeonLocationId() const { return static_cast<std::uint16_t>(kFirstLocationId + 2 * globalNumber() + 1); }
+
+std::optional<std::string> modFolderProblem(std::string_view folder) {
+    if (folder.empty()) return "a mod needs a folder name";
+    if (folder.size() > 64) return "the folder name is longer than 64 letters";
+    if (folder.front() == '-') return "the folder name cannot start with -";
+    for (const char c : folder) {
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) {
+            return "the folder name may only have a-z, 0-9 and -";
+        }
+    }
+    return std::nullopt;
+}
+
+Result<void> Project::setIdRange(int range) {
+    if (range < 0 || range >= kIdRanges) return fail(std::format("id ranges go from 0 to {}", kIdRanges - 1));
+    if (range == mod.idRange) return {};
+    if (numbersIssued()) return fail("the project has handed out numbers from its id range already");
+    mod.idRange = range;
+    return {};
+}
 
 const DungeonCell* ProjectDungeon::cellAt(int x, int z) const {
     const auto it = std::ranges::find_if(cells, [&](const DungeonCell& c) { return c.x == x && c.z == z; });
@@ -80,9 +102,9 @@ const CustomModel* Project::model(std::uint32_t id) const {
 }
 
 Result<CustomModel*> Project::addModel(std::string label, std::string description, mesh::Mesh mesh) {
-    if (modelsIssued_ >= kMaxModels) return fail("the project has used all its model numbers");
+    if (modelsIssued_ >= kModelsPerRange) return fail("the project has used all its model numbers");
     CustomModel m;
-    m.id = kFirstCustomModelId + static_cast<std::uint32_t>(++modelsIssued_);
+    m.id = kFirstCustomModelId + static_cast<std::uint32_t>(mod.idRange * kModelsPerRange + ++modelsIssued_);
     m.label = std::move(label);
     m.description = description.substr(0, 3);
     m.mesh = std::move(mesh);
@@ -97,8 +119,8 @@ bool Project::removeModel(std::uint32_t id) {
 Result<CustomBlock*> Project::addBlock(char letter, std::string label, std::optional<std::string> templateName,
                                        formats::RdbBlock data) {
     if (kRoleLetters.find(letter) == std::string_view::npos) return fail(std::string("no block role '") + letter + "'");
-    if (blocksIssued_ >= kMaxBlocks) return fail("the project has used all its block numbers");
-    const int number = ++blocksIssued_;
+    if (blocksIssued_ >= kBlocksPerRange) return fail("the project has used all its block numbers");
+    const int number = mod.idRange * kBlocksPerRange + ++blocksIssued_;
     CustomBlock b;
     b.name = makeBlockName(letter, number);
     b.label = std::move(label);
@@ -110,9 +132,10 @@ Result<CustomBlock*> Project::addBlock(char letter, std::string label, std::opti
 }
 
 Result<ProjectDungeon*> Project::addDungeon(std::string placeName) {
-    if (dungeonsIssued_ >= kMaxDungeons) return fail("the project has used all its dungeon numbers (148)");
+    if (dungeonsIssued_ >= kDungeonsPerRange) return fail("the project has used all its dungeon numbers (148)");
     ProjectDungeon d;
     d.number = dungeonsIssued_++;
+    d.idRange = mod.idRange;
     d.name = std::move(placeName);
     dungeons_.push_back(std::move(d));
     return &dungeons_.back();
@@ -129,6 +152,7 @@ bool Project::removeDungeon(int number) {
 Result<void> Project::save(const std::filesystem::path& file) const {
     Json j = {{"format", kFormat},
               {"name", name},
+              {"mod", {{"folder", mod.folder}, {"author", mod.author}, {"description", mod.description}, {"idRange", mod.idRange}}},
               {"blocksIssued", blocksIssued_},
               {"dungeonsIssued", dungeonsIssued_},
               {"modelsIssued", modelsIssued_}};
@@ -187,6 +211,15 @@ Result<Project> Project::load(const std::filesystem::path& file) {
     if (j.value("format", "") != kFormat) return fail(file.string() + " is not a dungeon editor project");
     Project p;
     p.name = j.value("name", p.name);
+    if (const auto m = j.value("mod", Json::object()); m.is_object()) {
+        p.mod.folder = m.value("folder", p.mod.folder);
+        p.mod.author = m.value("author", p.mod.author);
+        p.mod.description = m.value("description", "");
+        p.mod.idRange = m.value("idRange", 0);
+    }
+    if (const auto problem = modFolderProblem(p.mod.folder)) return fail(file.string() + ": " + *problem);
+    if (p.mod.idRange < 0 || p.mod.idRange >= kIdRanges) return fail(file.string() + ": bad id range");
+    const int range = p.mod.idRange;
     p.blocksIssued_ = j.value("blocksIssued", 0);
     p.dungeonsIssued_ = j.value("dungeonsIssued", 0);
     p.modelsIssued_ = j.value("modelsIssued", 0);
@@ -206,6 +239,7 @@ Result<Project> Project::load(const std::filesystem::path& file) {
         ProjectDungeon dungeon;
         dungeon.number = d.value("number", -1);
         if (dungeon.number < 0 || dungeon.number >= kMaxDungeons) return fail(file.string() + ": bad dungeon number");
+        dungeon.idRange = range;
         dungeon.name = d.value("name", "");
         dungeon.regionIndex = d.value("region", 17);
         const auto pixel = d.value("pixel", Json::array({0, 0}));
@@ -232,9 +266,17 @@ Result<Project> Project::load(const std::filesystem::path& file) {
         p.models_.push_back(std::move(model));
     }
     // Numbers are never handed out twice, even if the counters in the file were lost.
-    for (const auto& b : p.blocks_) p.blocksIssued_ = std::max(p.blocksIssued_, std::stoi(b.name.substr(3, 5)));
+    for (const auto& b : p.blocks_) {
+        const int n = std::stoi(b.name.substr(3, 5)) - range * kBlocksPerRange;
+        if (n < 1 || n > kBlocksPerRange) return fail(file.string() + ": " + b.name + " is outside the project's id range");
+        p.blocksIssued_ = std::max(p.blocksIssued_, n);
+    }
     for (const auto& d : p.dungeons_) p.dungeonsIssued_ = std::max(p.dungeonsIssued_, d.number + 1);
-    for (const auto& m : p.models_) p.modelsIssued_ = std::max(p.modelsIssued_, static_cast<int>(m.id - kFirstCustomModelId));
+    for (const auto& m : p.models_) {
+        const int n = static_cast<int>(m.id - kFirstCustomModelId) - range * kModelsPerRange;
+        if (n < 1 || n > kModelsPerRange) return fail(file.string() + ": model " + std::to_string(m.id) + " is outside the project's id range");
+        p.modelsIssued_ = std::max(p.modelsIssued_, n);
+    }
     return p;
 }
 

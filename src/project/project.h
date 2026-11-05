@@ -50,6 +50,7 @@ enum class DungeonLocationType : int { Labyrinth = 4, Keep = 7, Ruin = 10, Grave
 /// A dungeon the project adds to the world, as a new place.
 struct ProjectDungeon {
     int number = 0;            ///< Allocated once: its map id and location ids come from it.
+    int idRange = 0;           ///< Its project's id range (ModInfo): the location ids and file name take it in.
     std::string name;          ///< The place's name (unique in its region).
     int regionIndex = 17;      ///< Daggerfall
     int pixelX = 0, pixelY = 0;   ///< World map pixel (0..999, 0..499).
@@ -63,6 +64,8 @@ struct ProjectDungeon {
     [[nodiscard]] int pixelId() const { return pixelY * 1000 + pixelX; }
     [[nodiscard]] std::uint16_t exteriorLocationId() const;
     [[nodiscard]] std::uint16_t dungeonLocationId() const;
+    /// Its number among every editor mod's dungeons: the number in its project, past the ranges before its own.
+    [[nodiscard]] int globalNumber() const;
     [[nodiscard]] const DungeonCell* cellAt(int x, int z) const;
     [[nodiscard]] const DungeonCell* startingCell() const;
 };
@@ -82,9 +85,31 @@ inline constexpr std::uint32_t kBlockSaveStride = 1u << 20;
 /// Keeps every save identity (block base + object offset) within a signed 32-bit number.
 inline constexpr int kMaxBlocks = 1999;
 
+/// Several projects can each be a mod of their own, side by side in Bunnyfall's vendor/. Everything above is one space
+/// for all of them, so each project numbers from an id range of its own: range r issues blocks r*249+1 .. r*249+249,
+/// models 7,000,000 + r*124,999 + 1 .., and dungeons whose location ids start at 60000 + 2*148*r. Range 0 is the
+/// numbering projects had before ranges, so nothing already exported moves.
+inline constexpr int kIdRanges = 8;
+inline constexpr int kBlocksPerRange = kMaxBlocks / kIdRanges;   // 249
+inline constexpr int kModelsPerRange = kMaxModels / kIdRanges;   // 124,999
+inline constexpr int kDungeonsPerRange = kMaxDungeons;           // 148: map ids take the pixel in, location ids do not
+
+/// The mod a project exports as: a folder of Bunnyfall's vendor/ that the editor marks with dungeon-editor.mod.json,
+/// which Bunnyfall reads for the mod's switch (its title is the project's name).
+struct ModInfo {
+    std::string folder = "bunnyfall-dungeons";
+    std::string author = "Bunnyfall";
+    std::string description;
+    int idRange = 0;
+};
+
+/// What is wrong with a mod folder name (it is the mod's id in Bunnyfall: a-z, 0-9 and -), or nothing.
+std::optional<std::string> modFolderProblem(std::string_view folder);
+
 class Project {
 public:
-    std::string name = "Bunnyfall Dungeons";
+    std::string name = "Bunnyfall Dungeons";   ///< Also the mod's title in Bunnyfall.
+    ModInfo mod;
 
     [[nodiscard]] const std::vector<CustomBlock>& blocks() const { return blocks_; }
     /// The blocks, to change their labels and contents in place (names and save bases stay as issued).
@@ -116,6 +141,10 @@ public:
     [[nodiscard]] int blocksIssued() const { return blocksIssued_; }
     [[nodiscard]] int dungeonsIssued() const { return dungeonsIssued_; }
     [[nodiscard]] int modelsIssued() const { return modelsIssued_; }
+    /// Whether any number has been handed out: the id range is fixed from then on.
+    [[nodiscard]] bool numbersIssued() const { return blocksIssued_ + dungeonsIssued_ + modelsIssued_ > 0; }
+    /// Moves the project to another id range; refused once a number has been handed out from this one.
+    Result<void> setIdRange(int range);
 
 private:
     std::vector<CustomBlock> blocks_;

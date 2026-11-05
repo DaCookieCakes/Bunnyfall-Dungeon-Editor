@@ -523,3 +523,149 @@ TEST_CASE("edges extend into new faces, seen from the side the face beside them 
     checkWinding(m);
     CHECK(pointsOf(m, EdgeSet{north}).size() == 2);
 }
+
+TEST_CASE("turning about any axis, and what each point can slide along") {
+    auto m = room();
+    const auto all = pointsOf(m, {0, 1, 2, 3, 4, 5});
+    auto turned = m;
+    turnPointsAbout(turned, all, {0, 0, 0}, 1, 90);
+    auto byY = m;
+    turnPoints(byY, all, {0, 0, 0}, 90);
+    CHECK(turned == byY);   // about Y it is turnPoints
+    turnPointsAbout(turned, all, {0, 64, 0}, 0, 90);   // tipped over about X: the 256 length now stands up
+    CHECK(turned.bounds().size().y == doctest::Approx(128));
+    auto tipped = m;
+    turnPointsAbout(tipped, all, {0, 64, 0}, 0, 90);
+    CHECK(tipped.bounds().size().y == doctest::Approx(256));
+    checkWinding(tipped);
+
+    // The east wall's four corners slide along the edges leading away from the wall: one each.
+    const auto east = *faceAt(m, {64, 64, 0});
+    const auto wall = pointsOf(m, FaceSet{east});
+    const auto along = slideNeighbours(m, wall);
+    CHECK(along.size() == 4);
+    for (const auto& [p, qs] : along) {
+        REQUIRE(qs.size() == 1);
+        CHECK(m.points[qs[0]].x == doctest::Approx(-64));   // across to the west wall
+    }
+    // One corner alone has three edges to slide along.
+    CHECK(slideNeighbours(m, {0}).at(0).size() == 3);
+}
+
+TEST_CASE("sliding a wall along the floor's edges, never past their ends") {
+    auto m = room();
+    const auto east = *faceAt(m, {64, 64, 0});
+    const auto wall = pointsOf(m, FaceSet{east});
+    const auto neighbours = slideNeighbours(m, wall);
+    std::map<std::uint32_t, Vec3> start;
+    for (const auto p : wall) start[p] = m.points[p];
+    slidePoints(m, start, neighbours, {-1, 0, 0}, 0.25);   // a quarter of the way west
+    CHECK(m.centre(m.faces[east]).x == doctest::Approx(32));
+    CHECK(near(m.normal(m.faces[east]), {-1, 0, 0}));
+    slidePoints(m, start, neighbours, {-1, 0, 0}, 1);   // all the way: onto the west wall, no further
+    CHECK(m.centre(m.faces[east]).x == doctest::Approx(-64));
+    slidePoints(m, start, neighbours, {1, 0, 0}, 0.5);   // no edge runs east from the east wall: it stays
+    CHECK(m.centre(m.faces[east]).x == doctest::Approx(64));
+}
+
+namespace {
+double coveredArea(const Mesh& m, const Face& f) {
+    double area = 0;
+    for (const auto& t : triangulate(m, f)) {
+        area += length(cross(m.points[f.points[t[1]]] - m.points[f.points[t[0]]], m.points[f.points[t[2]]] - m.points[f.points[t[0]]])) / 2;
+    }
+    return area;
+}
+} // namespace
+
+TEST_CASE("points stacked on each other: a face through them still draws, and filling takes one of each") {
+    // A corner snapped onto another and never welded: two points in one place, both in the face.
+    Mesh m;
+    m.points = {{0, 0, 0}, {10, 0, 0}, {10, 0, 10}, {10, 0, 10}, {0, 0, 10}};
+    m.faces.push_back({{0, 4, 3, 2, 1}, {}, {}});   // seen from above
+    REQUIRE(near(m.normal(m.faces[0]), {0, 1, 0}));
+    CHECK(coveredArea(m, m.faces[0]) == doctest::Approx(100));
+    const auto problems = checkMesh(m);
+    REQUIRE(problems.size() == 1);
+    CHECK(problems[0].find("two points in one place") != std::string::npos);
+
+    // Joining them all, as a box selection over the stack would pick them: one point per place.
+    Mesh n;
+    n.points = m.points;
+    const auto f = fillFace(n, {0, 1, 2, 3, 4}, {}, {5, 50, 5});
+    REQUIRE(f);
+    CHECK(n.faces[*f].points.size() == 4);
+    CHECK(coveredArea(n, n.faces[*f]) == doctest::Approx(100));
+    CHECK(checkMesh(n).empty());
+    CHECK_FALSE(fillFace(n, {2, 3, 1}, {}, {}).has_value());   // only two places: no face
+}
+
+TEST_CASE("a face that crosses itself is still drawn, not dropped") {
+    Mesh m;
+    m.points = {{0, 0, 0}, {10, 0, 10}, {10, 0, 0}, {0, 0, 10}, {5, 0, 12}};
+    m.faces.push_back({{0, 3, 4, 1, 2}, {}, {}});
+    CHECK_FALSE(triangulate(m, m.faces[0]).empty());
+}
+
+TEST_CASE("a corner dropped on another becomes one with it") {
+    Mesh m;
+    addQuad(m, {{{0, 0, 0}, {10, 0, 0}, {10, 0, 10}, {0, 0, 10}}}, {0, 1, 0}, {});
+    addQuad(m, {{{12, 0, 0}, {20, 0, 0}, {20, 0, 10}, {12, 0, 10}}}, {0, 1, 0}, {});
+    // The second quad's west corners dragged onto the first's east ones.
+    movePoints(m, {4, 7}, {-2, 0, 0});
+    CHECK(m.points.size() == 8);
+    CHECK(mergeOnto(m, {4, 7}, 1e-3) == 2);
+    CHECK(m.points.size() == 6);
+    CHECK(edgesOf(m).size() == 7);   // the two quads share their middle edge now
+    CHECK(checkMesh(m).empty());
+    CHECK(mergeOnto(m, {0}, 1e-3) == 0);   // nothing under it
+}
+
+TEST_CASE("extruding in place, to pull out with the pointer: faces, edges and points") {
+    SUBCASE("faces keep their indices, take copies of their points, and get sides") {
+        auto m = room();
+        const auto east = faceAt(m, {64, 64, 0});
+        REQUIRE(east);
+        const auto before = m.points.size();
+        const auto made = extrudeFacesInPlace(m, {*east});
+        CHECK(made.faces.size() == 4);
+        CHECK(made.moving.size() == 4);
+        for (const auto p : made.moving) CHECK(p >= before);
+        CHECK(made.moving == pointsOf(m, FaceSet{*east}));
+        // Pulled out a cell east, as the pointer would: a corridor, wound right throughout.
+        movePoints(m, made.moving, {128, 0, 0});
+        CHECK(near(m.centre(m.faces[*east]), {192, 64, 0}));
+        checkWinding(m);
+    }
+    SUBCASE("edges: a face to each edge's copy, the far edges given") {
+        Mesh m;
+        addQuad(m, {{{0, 0, 0}, {128, 0, 0}, {128, 0, 128}, {0, 0, 128}}}, {0, 1, 0}, {120, 2});
+        const auto made = extrudeEdgesInPlace(m, {edgeOf(2, 3)});
+        REQUIRE(made.faces.size() == 1);
+        CHECK(made.moving.size() == 2);
+        REQUIRE(made.edges.size() == 1);
+        CHECK(pointsOf(m, made.edges) == made.moving);
+        movePoints(m, made.moving, {0, 0, 64});
+        CHECK(near(m.normal(m.faces[made.faces[0]]), {0, 1, 0}));   // more floor
+        checkWinding(m);
+    }
+    SUBCASE("points: two on a face's edge grow it; one on its own is copied") {
+        Mesh m;
+        addQuad(m, {{{0, 0, 0}, {128, 0, 0}, {128, 0, 128}, {0, 0, 128}}}, {0, 1, 0}, {120, 2});
+        // 2 and 3 are the north edge; 0 and 2 would be a diagonal, not an edge.
+        const auto edge = extrudePointsInPlace(m, {2, 3});
+        CHECK(edge.faces.size() == 1);
+        CHECK(edge.moving.size() == 2);
+        CHECK(m.points.size() == 6);
+        const auto diagonal = extrudePointsInPlace(m, {0, 2});
+        CHECK(diagonal.faces.empty());
+        REQUIRE(diagonal.moving.size() == 2);
+        CHECK(m.points.size() == 8);
+        CHECK(near(m.points[*diagonal.moving.begin()], m.points[0]));
+    }
+    SUBCASE("nothing to extrude") {
+        auto m = room();
+        CHECK(extrudeFacesInPlace(m, {99}).moving.empty());
+        CHECK(extrudeEdgesInPlace(m, {}).faces.empty());
+    }
+}

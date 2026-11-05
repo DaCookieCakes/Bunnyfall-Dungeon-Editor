@@ -562,8 +562,8 @@ void Viewer::continueDrag() {
             const auto r = cam.right(), u = cam.up();
             const double dx = moved.x * drag_.unitsPerPoint, dy = -moved.y * drag_.unitsPerPoint;
             const auto steps = moveSteps(selectionHasPieces());
-            const std::array<std::int32_t, 3> offset{snapped(r.x * dx + u.x * dy, steps[0]), -snapped(r.y * dx + u.y * dy, steps[1]),
-                                                     snapped(r.z * dx + u.z * dy, steps[2])};
+            const auto offset = vertexSnapOffset({snapped(r.x * dx + u.x * dy, steps[0]), -snapped(r.y * dx + u.y * dy, steps[1]),
+                                                  snapped(r.z * dx + u.z * dy, steps[2])});
             if (offset != drag_.lastOffset) {
                 applyTransform(offset, 0);
                 drag_.lastOffset = offset;

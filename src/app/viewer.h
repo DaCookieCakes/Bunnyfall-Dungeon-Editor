@@ -4,6 +4,7 @@
 #include "edit/block_edit.h"
 #include "edit/entities.h"
 #include "edit/transform.h"
+#include "edit/vertex_snap.h"
 #include "export/patch_folder.h"
 #include "formats/arena2.h"
 #include "formats/maps.h"
@@ -38,10 +39,16 @@ class Viewer {
 public:
     static Result<std::unique_ptr<Viewer>> create(const formats::Arena2& arena2);
 
-    /// Where edited blocks are saved as patches, and read from (Bunnyfall's vendor/<mod>/WorldDataPatches).
-    void setPatchFolder(std::filesystem::path dir) { patches_.emplace(std::move(dir)); }
-    /// The mod folder a project exports to (Bunnyfall's vendor/<mod>/); its WorldDataPatches is the patch folder.
+    /// Where edited blocks are saved as patches, and read from, in place of the mod folder's WorldDataPatches.
+    void setPatchFolder(std::filesystem::path dir) {
+        patchOverride_ = dir;
+        patches_.emplace(std::move(dir));
+    }
+    /// The mod folder a project exports to, in place of Bunnyfall's vendor/<the project's mod folder>/. Its
+    /// WorldDataPatches is the patch folder.
     void setModFolder(std::filesystem::path dir);
+    /// Where the project exports to now, if anywhere.
+    [[nodiscard]] const std::optional<std::filesystem::path>& modFolder() const { return modDir_; }
     /// The project file: loaded if it exists, else a new project saved there on first save.
     Result<void> setProjectFile(std::filesystem::path file);
     [[nodiscard]] project::Project& project() { return project_; }
@@ -223,6 +230,18 @@ private:
     /// views the plane through the view's middle. Only inside a scene block.
     [[nodiscard]] std::optional<SurfacePoint> placementSurface(double x, double y);
 
+    // ---- vertex snap (viewer_snap.cpp) ----
+    /// A model's open rims, its own coordinates (classic models kept once worked out).
+    [[nodiscard]] std::vector<edit::Rim> rimsOf(std::uint32_t modelId);
+    /// With vertex snap on: how far (editor space) models at `moving` have to go so that one of their open rims lies
+    /// point for point on a rim of a still model near it on screen, taking the shortest move. The objects being
+    /// moved (moving_) are not met. Remembers the rim met, to draw it. Nothing when no rim is near enough.
+    [[nodiscard]] std::optional<catalog::Vec3> vertexSnapShift(const std::vector<scene::ModelInstance>& moving);
+    /// `offset` (file units) for the moving_ snapshot, changed to meet a rim when vertex snap finds one.
+    [[nodiscard]] std::array<std::int32_t, 3> vertexSnapOffset(std::array<std::int32_t, 3> offset);
+    /// The rim the last snap met, outlined in a view.
+    void drawSnapRim(std::size_t view);
+
     // ---- the outliner (viewer_outliner.cpp) ----
     void drawOutliner();
     /// Fit the 2D views around the selection and back the 3D camera off until it is all in view.
@@ -379,20 +398,41 @@ private:
         std::array<std::pair<catalog::Vec3, double>, 4> savedViews{};
         // A drag in a view: a box, the selection moved in the view's plane, or along one axis.
         struct Drag {
-            enum class Kind { None, Pending, Box, Plane, Axis } kind = Kind::None;
+            enum class Kind { None, Pending, Box, Plane, Axis, Turn, Scale, Slide } kind = Kind::None;
             std::size_t view = 0;
             ImVec2 press{};
+            bool byKey = false;                 // started by G: a left click puts it down (not letting go)
             bool onSelection = false;           // Pending: pressed on what is selected (a drag moves it)
             bool add = false, toggle = false;   // Shift, Ctrl at the press
-            int axis = 0;                       // Axis: 0 X, 1 Y, 2 Z
+            int axis = 0;                       // Axis, Turn, Scale: 0 X, 1 Y, 2 Z (Scale: 3, all three at once)
             bool vertical = false;              // Plane in the 3D view: up and down instead of across
             catalog::Vec3 anchor;               // the point that snaps (the grabbed corner)
             catalog::Vec3 planeNormal;          // Plane: the plane it slides in, through the anchor
             catalog::Vec3 grabHit;              // Plane: where the pointer met that plane at the start
             std::map<std::uint32_t, catalog::Vec3> start;   // where the moving points were
+            catalog::Vec3 centre;               // Turn, Scale: the selection's middle at the start
+            double lastAngle = 0, turned = 0;   // Turn: radians, unwrapped
+            double extent = 0;                  // Scale: the selection's size along the axis at the start
+            std::uint32_t anchorPoint = 0;      // Slide: the point nearest the pointer, which the pointer leads
+            std::map<std::uint32_t, std::vector<std::uint32_t>> neighbours;   // Slide: what each point can slide toward
+            // An extrusion being pulled out: the selection before it, put back when it is cancelled.
+            struct Before {
+                mesh::PointSet points;
+                mesh::EdgeSet edges;
+                mesh::FaceSet faces;
+            };
+            std::optional<Before> extruding;
+            [[nodiscard]] bool moving() const {
+                return kind == Kind::Plane || kind == Kind::Axis || kind == Kind::Turn || kind == Kind::Scale ||
+                       kind == Kind::Slide;
+            }
         } drag;
+        enum class Tool { Move, Turn, Scale } tool = Tool::Move;   // which handles the selection shows (R)
+        double scaleBy[3] = {1, 1, 1};
+        double turnBy = 90;
         double grid = 16;            // block units; snaps moves and new shapes
         bool snapPoints = true;      // a moved corner lands on a point near the pointer
+        bool weldSnapped = true;     // and a corner left on another point becomes one with it
         double extrudeBy = 128;
         catalog::Box shape{{-64, 0, -64}, {64, 128, 64}};   // the box (or stairs) the Shapes section adds
         bool inward = true;
@@ -407,6 +447,7 @@ private:
         // The right-click menu: what it was opened on, and where (the point on the face, for "slice here").
         struct Menu {
             std::optional<std::uint32_t> element;
+            bool elsewhere = false;   // opened away from the selection (on empty space or something unpicked)
             std::optional<catalog::Vec3> at;
             ImVec2 screen{};
         };
@@ -473,6 +514,15 @@ private:
     void frameModel();
     // The editor's actions, each one undo step (shared by the panel, the keys and the scripted check).
     void modelExtrude(double distance);
+    /// Extrude what is picked (faces, edges or points) where it is and move the copies with the pointer, as G does;
+    /// one undo step with the move. Cancelling, or putting it down where it started, makes nothing.
+    void modelExtrudeAndMove(std::size_t view, ImVec2 at);
+    /// Stops the drag in progress, putting the mesh (and an extrusion's selection) back.
+    void cancelModelDrag();
+    /// The menu for empty space: shapes, select all, pick kinds.
+    void drawModelEmptyMenu();
+    /// The menu for what is picked (by kind), for `menu`'s element.
+    void drawModelSelectionMenu(const ModelEditor::Menu& menu);
     void modelDelete();
     void modelFlip();
     void modelJoin();
@@ -483,6 +533,13 @@ private:
     void modelExtendEdges(int vertical);
     void modelWeld();
     void modelMove(catalog::Vec3 offset);
+    /// G: the selection follows the pointer in `view` (the corner nearest `at` leads) until a click puts it down.
+    /// Also what a drag on the selection starts (`byKey` false: letting go puts it down). False when nothing moves.
+    bool startModelGrab(std::size_t view, ImVec2 at, bool byKey, bool upAndDown = false);
+    /// G G: each moving point slides along one of its own edges toward the pointer, no further than its other end.
+    bool startModelSlide(std::size_t view, ImVec2 at);
+    void modelScale(catalog::Vec3 factors);
+    void modelTurnAbout(int axis, double degrees);
     void modelTurn(double degrees);
     void modelMirror(int axis);
     void modelDuplicate();
@@ -516,6 +573,10 @@ private:
     /// Open the project dungeon and start editing the block at a grid cell, the camera over it.
     void editCell(int dungeonNumber, int x, int z);
     void refreshIssues();
+    /// The mod folder from the overrides, else Bunnyfall's vendor/<the project's folder>; and its patch folder.
+    void applyModFolder();
+    void drawModSettings();
+    void refreshOtherMods();
     /// Puts the scene's copies of the edited block back to what is saved, and stops editing.
     void discardEdit();
     [[nodiscard]] std::pair<double, double> entitySize(const formats::RdbObject& obj);
@@ -597,6 +658,9 @@ private:
     render::InstanceFlags flags_;
     enum class GizmoMode { Move, Turn } gizmoMode_ = GizmoMode::Move;
     bool pieceSnap_ = true;                                 // architecture and doors on the classic grid
+    bool vertexSnap_ = false;                               // models meet still models rim to rim (V)
+    std::map<std::uint32_t, std::vector<edit::Rim>> rims_;  // classic models' open rims, worked out once
+    std::optional<edit::Rim> snapRim_;                      // the rim the last snap met (world), drawn
     int turnSnap_ = 128;                                    // file rotation units (22.5 degrees); 1 = off
     // A drag in a view: a box being drawn, or a handle (or a selected object) being dragged.
     struct Drag {
@@ -622,6 +686,9 @@ private:
     project::Project project_;
     std::filesystem::path projectFile_;
     std::optional<std::filesystem::path> modDir_;
+    std::optional<std::filesystem::path> modOverride_, patchOverride_;   // --mod, --patches and the checks' folders
+    std::vector<project::EditorMod> otherMods_;   // the editor mods beside this one, read when the Mod tab opens
+    std::vector<project::Issue> modIssues_;       // and what is wrong with exporting there
     bool projectDirty_ = false;
     std::unique_ptr<project::World> world_;
     int currentDungeon_ = -1;                    // the project dungeon the panel shows

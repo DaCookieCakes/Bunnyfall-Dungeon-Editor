@@ -38,6 +38,7 @@ const ImU32 kReferenceColour = IM_COL32(90, 200, 255, 120);
 constexpr std::array<ImU32, 3> kAxisColours = {IM_COL32(235, 80, 70, 255), IM_COL32(110, 210, 90, 255),
                                                IM_COL32(80, 140, 255, 255)};
 constexpr std::array<Vec3, 3> kAxes = {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+constexpr double kTurnSnap = 15;      // degrees a turn handle snaps to (Shift: free)
 constexpr std::array<double, 9> kGridSteps = {1, 2, 4, 8, 16, 32, 64, 128, 256};
 
 /// The dungeon base archives (a dungeon's texture table swaps them) and a few fixed sets classic pieces also use.
@@ -50,6 +51,26 @@ float segmentDistance(ImVec2 p, ImVec2 a, ImVec2 b) {
     const float len2 = ab.x * ab.x + ab.y * ab.y;
     const float t = len2 > 0 ? std::clamp((ap.x * ab.x + ap.y * ab.y) / len2, 0.0f, 1.0f) : 0.0f;
     return distance(p, {a.x + ab.x * t, a.y + ab.y * t});
+}
+
+/// The two directions across the plane a turn about `axis` happens in, `u` turning toward `v` for a positive turn
+/// (catalog::axisRotation): X turns Y toward Z, Y turns Z toward X, Z turns X toward Y.
+std::pair<Vec3, Vec3> ringBasis(int axis) {
+    return axis == 0 ? std::pair{Vec3{0, 1, 0}, Vec3{0, 0, 1}}
+           : axis == 1 ? std::pair{Vec3{0, 0, 1}, Vec3{1, 0, 0}}
+                       : std::pair{Vec3{1, 0, 0}, Vec3{0, 1, 0}};
+}
+
+/// Where the ray meets a turn ring's plane, as an angle round `centre` (0 along u, growing toward v).
+std::optional<double> angleOnRing(const scene::Ray& ray, Vec3 centre, int axis) {
+    const auto [u, v] = ringBasis(axis);
+    const Vec3 n = kAxes[static_cast<std::size_t>(axis)];
+    const double denom = mesh::dot(ray.direction, n);
+    if (std::abs(denom) < 1e-3) return std::nullopt;
+    const Vec3 h = ray.origin + ray.direction * (mesh::dot(centre - ray.origin, n) / denom) - centre;
+    const double a = mesh::dot(h, u), b = mesh::dot(h, v);
+    if (a * a + b * b < 1e-6) return std::nullopt;
+    return std::atan2(b, a);
 }
 
 double& component(Vec3& v, int axis) { return axis == 0 ? v.x : axis == 1 ? v.y : v.z; }
@@ -372,12 +393,50 @@ void Viewer::continueModelDrag() {
     const auto& v = views_[d.view];
 
     // Right button or Esc (handleModelKey) cancels a move.
-    if ((d.kind == ModelEditor::Drag::Kind::Plane || d.kind == ModelEditor::Drag::Kind::Axis) &&
-        ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        e.edit.cancelGesture();
-        d = {};
+    if (d.moving() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        cancelModelDrag();
+        status_ = "Cancelled.";
         return;
     }
+    // A drag ends when the button comes up; a move started by a key, on the next left click.
+    const bool done = d.byKey ? ImGui::IsMouseClicked(ImGuiMouseButton_Left) : !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    const bool free = io.KeyShift;   // Shift: no snapping (turns, scales and slides)
+    // Putting it down: corners left on other points become one with them (when asked), in the same undo step.
+    auto finish = [&] {
+        // An extrusion put down where it started would leave faces of no size: it makes nothing.
+        if (d.extruding) {
+            const auto& m = e.edit.mesh();
+            const bool still = std::ranges::all_of(d.start, [&](const auto& moved) {
+                return moved.first >= m.points.size() || mesh::length(m.points[moved.first] - moved.second) < 1e-6;
+            });
+            if (still) {
+                cancelModelDrag();
+                status_ = "Extrude: not moved, so nothing made.";
+                return;
+            }
+        }
+        if (e.weldSnapped) {
+            mesh::PointSet moved;
+            for (const auto& [p, _] : d.start) moved.insert(p);
+            const auto& m = e.edit.mesh();
+            const bool touching = std::ranges::any_of(moved, [&](std::uint32_t p) {
+                for (std::uint32_t q = 0; q < m.points.size(); ++q) {
+                    if (q != p && !moved.contains(q) && mesh::length(m.points[p] - m.points[q]) < 1e-3) return true;
+                }
+                return false;
+            });
+            if (touching) {
+                const auto n = mesh::mergeOnto(e.edit.change(), moved, 1e-3);
+                e.points.clear();
+                e.edges.clear();
+                e.faces.clear();
+                status_ = std::format("Welded {} point{} onto the point{} {} landed on.", n, n == 1 ? "" : "s", n == 1 ? "" : "s",
+                                      n == 1 ? "it" : "they");
+            }
+        }
+        e.edit.endGesture();
+        d = {};
+    };
     auto applyOffset = [&](Vec3 offset) {
         auto& m = e.edit.change();
         for (const auto& [p, start] : d.start) {
@@ -398,32 +457,9 @@ void Viewer::continueModelDrag() {
                 return;
             }
             {
-                // Moving the selection in the view's plane, by the corner nearest the pointer.
-                const auto moving = modelMovingPoints();
-                const auto& m = e.edit.mesh();
-                float best = 1e30f;
-                for (const auto p : moving) {
-                    d.start[p] = m.points[p];
-                    if (const auto s = toScreen(d.view, m.points[p]); s && distance(*s, d.press) < best) {
-                        best = distance(*s, d.press);
-                        d.anchor = m.points[p];
-                    }
-                }
-                const auto cam = cameraOf(d.view);
-                d.vertical = v.kind == ViewKind::Perspective && io.KeyShift;
-                if (v.kind != ViewKind::Perspective) d.planeNormal = cam.forward();
-                else if (d.vertical) d.planeNormal = mesh::normalised({cam.forward().x, 0, cam.forward().z});
-                else d.planeNormal = {0, 1, 0};
-                const auto ray = cam.rayThrough(d.press.x - v.min.x, d.press.y - v.min.y, v.size.x, v.size.y);
-                const double denom = mesh::dot(ray.direction, d.planeNormal);
-                if (std::abs(denom) < 1e-6) {   // the plane is edge-on: nothing sensible to drag along
-                    d = {};
-                    return;
-                }
-                const double t = mesh::dot(d.anchor - ray.origin, d.planeNormal) / denom;
-                d.grabHit = ray.origin + ray.direction * t;
-                d.kind = ModelEditor::Drag::Kind::Plane;
-                e.edit.beginGesture();
+                const auto press = d.press;
+                const auto view = d.view;
+                if (!startModelGrab(view, press, false)) return;
             }
             [[fallthrough]];
         case ModelEditor::Drag::Kind::Plane: {
@@ -447,10 +483,7 @@ void Viewer::continueModelDrag() {
                 const Vec3 target = snapModelPoint(d.view, wanted, io.MousePos, axes);
                 applyOffset(target - d.anchor);
             }
-            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                e.edit.endGesture();
-                d = {};
-            }
+            if (done) finish();
             break;
         }
         case ModelEditor::Drag::Kind::Axis: {
@@ -470,10 +503,100 @@ void Viewer::continueModelDrag() {
                     applyOffset(offset);
                 }
             }
-            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                e.edit.endGesture();
-                d = {};
+            if (done) finish();
+            break;
+        }
+        case ModelEditor::Drag::Kind::Turn: {
+            const auto ray = cameraOf(d.view).rayThrough(io.MousePos.x - v.min.x, io.MousePos.y - v.min.y, v.size.x, v.size.y);
+            if (const auto angle = angleOnRing(ray, d.centre, d.axis)) {
+                double step = *angle - d.lastAngle;   // unwrapped, so turning past half a turn keeps going
+                while (step > std::numbers::pi) step -= 2 * std::numbers::pi;
+                while (step < -std::numbers::pi) step += 2 * std::numbers::pi;
+                d.turned += step;
+                d.lastAngle = *angle;
             }
+            double degrees = d.turned * 180 / std::numbers::pi;
+            if (!free) degrees = mesh::snapTo(degrees, kTurnSnap);
+            const auto r = catalog::axisRotation(d.axis, degrees);
+            auto& m = e.edit.change();
+            for (const auto& [p, start] : d.start) m.points[p] = d.centre + r * (start - d.centre);
+            status_ = std::format("Turning {:.1f} degrees about {} (Shift: no snap)", degrees, "XYZ"[d.axis]);
+            if (done) finish();
+            break;
+        }
+        case ModelEditor::Drag::Kind::Scale: {
+            // Along the handle: how far the pointer is out along it now against at the press. All three at once:
+            // right grows, left shrinks.
+            double factor = 1;
+            const auto c = toScreen(d.view, d.centre);
+            if (d.axis == 3) {
+                factor = std::max(0.01, 1 + double(io.MousePos.x - d.press.x) / kHandleLength);
+            } else if (c) {
+                const auto tip = toScreen(d.view, d.centre + kAxes[static_cast<std::size_t>(d.axis)] * 100.0);
+                if (tip) {
+                    const ImVec2 s = sub(*tip, *c);
+                    const double at = (d.press.x - c->x) * s.x + (d.press.y - c->y) * s.y;
+                    const double now = (io.MousePos.x - c->x) * s.x + (io.MousePos.y - c->y) * s.y;
+                    if (std::abs(at) > 1e-6) factor = std::max(0.01, now / at);
+                }
+            }
+            // Snapped so the selection's size lands on the grid.
+            double size = d.extent * factor;
+            if (!free) size = std::max(e.grid, mesh::snapTo(size, e.grid));
+            factor = size / d.extent;
+            const Vec3 f{d.axis == 0 || d.axis == 3 ? factor : 1, d.axis == 1 || d.axis == 3 ? factor : 1,
+                         d.axis == 2 || d.axis == 3 ? factor : 1};
+            auto& m = e.edit.change();
+            for (const auto& [p, start] : d.start) {
+                const Vec3 o = start - d.centre;
+                m.points[p] = d.centre + Vec3{o.x * f.x, o.y * f.y, o.z * f.z};
+            }
+            status_ = std::format("Scaling {} by {:.3f}: {:g} units (Shift: no snap)", d.axis == 3 ? "all" : std::string(1, "XYZ"[d.axis]),
+                                  factor, size);
+            if (done) finish();
+            break;
+        }
+        case ModelEditor::Drag::Kind::Slide: {
+            // The pointer leads the anchor along whichever of its edges points most its way; every other point takes
+            // its own edge that runs most like that one, the same share of the way along.
+            auto& m = e.edit.change();
+            for (const auto& [p, start] : d.start) m.points[p] = start;
+            const ImVec2 moved = sub(io.MousePos, d.press);
+            const float movedLength = std::hypot(moved.x, moved.y);
+            const auto anchorScreen = toScreen(d.view, d.start[d.anchorPoint]);
+            const auto choices = d.neighbours.find(d.anchorPoint);
+            if (movedLength > 2 && anchorScreen && choices != d.neighbours.end()) {
+                std::optional<std::uint32_t> best;
+                double bestDot = -2;
+                ImVec2 bestScreen{};
+                for (const auto q : choices->second) {
+                    const auto qs = toScreen(d.view, m.points[q]);
+                    if (!qs) continue;
+                    const ImVec2 s = sub(*qs, *anchorScreen);
+                    const float len = std::hypot(s.x, s.y);
+                    if (len < 1) continue;
+                    const double dd = (s.x * moved.x + s.y * moved.y) / (len * movedLength);
+                    if (dd > bestDot) {
+                        bestDot = dd;
+                        best = q;
+                        bestScreen = s;
+                    }
+                }
+                if (best) {
+                    const Vec3 edge = m.points[*best] - d.start[d.anchorPoint];
+                    const double edgeLength = mesh::length(edge);
+                    double t = std::clamp((moved.x * bestScreen.x + moved.y * bestScreen.y) /
+                                              double(bestScreen.x * bestScreen.x + bestScreen.y * bestScreen.y),
+                                          0.0, 1.0);
+                    if (!free && edgeLength > 1e-6) t = std::clamp(mesh::snapTo(t * edgeLength, e.grid), 0.0, edgeLength) / edgeLength;
+                    mesh::slidePoints(m, d.start, d.neighbours, edge, t);
+                    auto* list = ImGui::GetForegroundDrawList();
+                    if (const auto q = toScreen(d.view, m.points[*best])) list->AddLine(*anchorScreen, *q, IM_COL32(255, 230, 90, 200), 2);
+                    status_ = std::format("Sliding {:.0f}% along ({:g} of {:.0f} units; Shift: no snap, G again: move freely)",
+                                          t * 100, t * edgeLength, edgeLength);
+                }
+            }
+            if (done) finish();
             break;
         }
         case ModelEditor::Drag::Kind::Box: {
@@ -604,36 +727,119 @@ bool Viewer::drawModelOverlay(std::size_t view) {
         }
     }
 
-    // Handles: an arrow per axis from the selection's middle; dragging one moves along it.
+    // Handles on the selection's middle, by tool: arrows to move along an axis, rings to turn about one, and
+    // square-ended arms to scale along one (the middle square scales all three).
     bool overHandle = false;
     const auto centre = modelSelectionCentre();
-    if (centre && e.drag.kind != ModelEditor::Drag::Kind::Box) {
-        const auto c = toScreen(view, *centre);
+    const bool idle = e.drag.kind == ModelEditor::Drag::Kind::None && ImGui::IsItemHovered();
+    const bool handlesShown = centre && (e.drag.kind == ModelEditor::Drag::Kind::None || e.drag.view == view) &&
+                              e.drag.kind != ModelEditor::Drag::Kind::Box && e.drag.kind != ModelEditor::Drag::Kind::Slide &&
+                              !(e.drag.kind == ModelEditor::Drag::Kind::Plane && e.drag.byKey);
+    const auto c = handlesShown ? toScreen(view, *centre) : std::nullopt;
+    if (c) {
         const double reach = kHandleLength * unitsPerPoint(view, *centre);
         const auto& io = ImGui::GetIO();
+        const ImU32 hotColour = IM_COL32(255, 255, 255, 255);
         std::optional<int> hovered;
-        for (int a = 0; a < 3 && c; ++a) {
-            const auto tip = toScreen(view, *centre + kAxes[static_cast<std::size_t>(a)] * reach);
-            if (!tip || distance(*tip, *c) < 12) continue;   // pointing at the viewer: no handle
-            const bool hot = (e.drag.kind == ModelEditor::Drag::Kind::Axis && e.drag.axis == a && e.drag.view == view) ||
-                             (e.drag.kind == ModelEditor::Drag::Kind::None && ImGui::IsItemHovered() &&
-                              segmentDistance(io.MousePos, *c, *tip) < 6);
-            if (hot) hovered = a;
-            const auto colour = hot ? IM_COL32(255, 255, 255, 255) : kAxisColours[static_cast<std::size_t>(a)];
-            list->AddLine(*c, *tip, colour, hot ? 3.5f : 2.5f);
-            list->AddCircleFilled(*tip, hot ? 6.0f : 5.0f, colour);
-        }
-        if (hovered && e.drag.kind == ModelEditor::Drag::Kind::None) {
-            overHandle = true;
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                e.drag = {};
-                e.drag.kind = ModelEditor::Drag::Kind::Axis;
-                e.drag.view = view;
-                e.drag.press = io.MousePos;
-                e.drag.axis = *hovered;
-                e.drag.anchor = *centre;
-                for (const auto p : modelMovingPoints()) e.drag.start[p] = m.points[p];
-                e.edit.beginGesture();
+        auto startDrag = [&](ModelEditor::Drag::Kind kind, int axis) {
+            e.drag = {};
+            e.drag.kind = kind;
+            e.drag.view = view;
+            e.drag.press = io.MousePos;
+            e.drag.axis = axis;
+            e.drag.anchor = *centre;
+            e.drag.centre = *centre;
+            for (const auto p : modelMovingPoints()) e.drag.start[p] = m.points[p];
+            e.edit.beginGesture();
+        };
+        if (e.tool == ModelEditor::Tool::Turn) {
+            // Rings: all three in 3D; in each 2D view the one facing it (Top turns about Y, Front Z, Side X).
+            std::vector<int> axes;
+            switch (v.kind) {
+                case ViewKind::Perspective: axes = {0, 1, 2}; break;
+                case ViewKind::Top: axes = {1}; break;
+                case ViewKind::Front: axes = {2}; break;
+                case ViewKind::Side: axes = {0}; break;
+            }
+            constexpr int kSegments = 48;
+            float hotDistance = 6;
+            std::array<std::vector<ImVec2>, 3> rings;
+            for (const int a : axes) {
+                const auto [u, w] = ringBasis(a);
+                for (int i = 0; i <= kSegments; ++i) {
+                    const double t = i * 2 * std::numbers::pi / kSegments;
+                    if (const auto p = toScreen(view, *centre + u * (std::cos(t) * reach) + w * (std::sin(t) * reach))) {
+                        rings[static_cast<std::size_t>(a)].push_back(*p);
+                    }
+                }
+                const auto& ring = rings[static_cast<std::size_t>(a)];
+                for (std::size_t i = 1; i < ring.size() && idle; ++i) {
+                    const float dd = segmentDistance(io.MousePos, ring[i - 1], ring[i]);
+                    if (dd < hotDistance) {
+                        hotDistance = dd;
+                        hovered = a;
+                    }
+                }
+            }
+            for (const int a : axes) {
+                const auto& ring = rings[static_cast<std::size_t>(a)];
+                const bool hot = hovered == a || (e.drag.kind == ModelEditor::Drag::Kind::Turn && e.drag.axis == a);
+                if (ring.size() > 1) {
+                    list->AddPolyline(ring.data(), int(ring.size()), hot ? hotColour : kAxisColours[static_cast<std::size_t>(a)],
+                                      0, hot ? 3.5f : 2.5f);
+                }
+            }
+            list->AddCircleFilled(*c, 3, kPointColour);
+            if (hovered) {
+                overHandle = true;
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    const auto ray = cameraOf(view).rayThrough(io.MousePos.x - v.min.x, io.MousePos.y - v.min.y, v.size.x, v.size.y);
+                    if (const auto angle = angleOnRing(ray, *centre, *hovered)) {
+                        startDrag(ModelEditor::Drag::Kind::Turn, *hovered);
+                        e.drag.lastAngle = *angle;
+                    }
+                }
+            }
+        } else {
+            const bool scaling = e.tool == ModelEditor::Tool::Scale;
+            const auto activeKind = scaling ? ModelEditor::Drag::Kind::Scale : ModelEditor::Drag::Kind::Axis;
+            for (int a = 0; a < 3; ++a) {
+                const auto tip = toScreen(view, *centre + kAxes[static_cast<std::size_t>(a)] * reach);
+                if (!tip || distance(*tip, *c) < 12) continue;   // pointing at the viewer: no handle
+                const bool hot = (e.drag.kind == activeKind && e.drag.axis == a) ||
+                                 (idle && !hovered && segmentDistance(io.MousePos, *c, *tip) < 6);
+                if (hot && idle) hovered = a;
+                const auto colour = hot ? hotColour : kAxisColours[static_cast<std::size_t>(a)];
+                list->AddLine(*c, *tip, colour, hot ? 3.5f : 2.5f);
+                if (scaling) list->AddRectFilled({tip->x - 5, tip->y - 5}, {tip->x + 5, tip->y + 5}, colour);
+                else list->AddCircleFilled(*tip, hot ? 6.0f : 5.0f, colour);
+            }
+            if (scaling) {
+                const bool hot = (e.drag.kind == activeKind && e.drag.axis == 3) ||
+                                 (idle && std::abs(io.MousePos.x - c->x) <= 7 && std::abs(io.MousePos.y - c->y) <= 7);
+                if (hot && idle) hovered = 3;
+                list->AddRectFilled({c->x - 6, c->y - 6}, {c->x + 6, c->y + 6}, hot ? hotColour : kPointColour);
+            }
+            if (hovered) {
+                overHandle = true;
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    startDrag(activeKind, *hovered);
+                    if (scaling) {
+                        // The size it scales: along its axis, or for all three the largest.
+                        Vec3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+                        for (const auto& [p, q] : e.drag.start) {
+                            lo = {std::min(lo.x, q.x), std::min(lo.y, q.y), std::min(lo.z, q.z)};
+                            hi = {std::max(hi.x, q.x), std::max(hi.y, q.y), std::max(hi.z, q.z)};
+                        }
+                        Vec3 size = hi - lo;
+                        e.drag.extent = *hovered == 3 ? std::max({size.x, size.y, size.z}) : component(size, *hovered);
+                        if (e.drag.extent < 1e-6) {
+                            e.edit.cancelGesture();
+                            e.drag = {};
+                            status_ = "The selection has no size along that axis to scale.";
+                        }
+                    }
+                }
             }
         }
     }
@@ -683,6 +889,64 @@ void Viewer::modelExtrude(double distance) {
     modelChanged();
     status_ = std::format("Extruded {} face{} {} units {}; {} new.", e.faces.size(), e.faces.size() == 1 ? "" : "s",
                           std::abs(distance), distance < 0 ? "out" : "in", made.size());
+}
+
+void Viewer::modelExtrudeAndMove(std::size_t view, ImVec2 at) {
+    auto& e = *modelEditor_;
+    if (e.drag.kind != ModelEditor::Drag::Kind::None) return;
+    if (e.selectedCount() == 0) {
+        status_ = "Pick something to extrude first.";
+        return;
+    }
+    const ModelEditor::Drag::Before before{e.points, e.edges, e.faces};
+    e.edit.beginGesture();
+    auto& m = e.edit.change();
+    mesh::Extrusion made;
+    switch (e.pick) {
+        case ModelEditor::Pick::Points: made = mesh::extrudePointsInPlace(m, e.points); break;
+        case ModelEditor::Pick::Edges: made = mesh::extrudeEdgesInPlace(m, e.edges); break;
+        case ModelEditor::Pick::Faces: made = mesh::extrudeFacesInPlace(m, e.faces); break;
+    }
+    if (made.moving.empty()) {
+        e.edit.cancelGesture();
+        status_ = "Nothing to extrude there.";
+        return;
+    }
+    // The copies are what moves: the faces keep their indices and take them; edges and points pick the copies.
+    if (e.pick == ModelEditor::Pick::Points) e.points = made.moving;
+    else if (e.pick == ModelEditor::Pick::Edges) e.edges = made.edges;
+    modelChanged();
+    // Floors and ceilings pull up and down in 3D, walls across (Shift the other way round).
+    bool level = false;
+    if (e.pick == ModelEditor::Pick::Faces) {
+        Vec3 n;
+        for (const auto f : e.faces) n = n + e.edit.mesh().normal(e.edit.mesh().faces[f]);
+        level = std::abs(mesh::normalised(n).y) > 0.7;
+    }
+    if (!startModelGrab(view, at, true, level)) {
+        e.edit.cancelGesture();
+        e.points = before.points;
+        e.edges = before.edges;
+        e.faces = before.faces;
+        modelChanged();
+        status_ = "Extrude: this view cannot move it (try another view).";
+        return;
+    }
+    e.drag.extruding = before;
+    status_ = std::format("Extruding {} new face{}: move the pointer, click to put it down (3D: Shift+E the other way), "
+                          "right-click or Esc cancels.", made.faces.size(), made.faces.size() == 1 ? "" : "s");
+}
+
+void Viewer::cancelModelDrag() {
+    auto& e = *modelEditor_;
+    if (e.drag.moving()) e.edit.cancelGesture();
+    if (e.drag.extruding) {
+        e.points = e.drag.extruding->points;
+        e.edges = e.drag.extruding->edges;
+        e.faces = e.drag.extruding->faces;
+    }
+    e.drag = {};
+    modelChanged();
 }
 
 void Viewer::modelDelete() {
@@ -885,6 +1149,91 @@ void Viewer::modelMove(Vec3 offset) {
     modelChanged();
 }
 
+bool Viewer::startModelGrab(std::size_t view, ImVec2 at, bool byKey, bool upAndDown) {
+    auto& e = *modelEditor_;
+    auto& d = e.drag;
+    const auto moving = modelMovingPoints();
+    if (moving.empty()) return false;
+    const auto& v = views_[view];
+    d = {};
+    d.view = view;
+    d.press = at;
+    d.byKey = byKey;
+    // The corner nearest the pointer leads (and snaps).
+    const auto& m = e.edit.mesh();
+    float best = 1e30f;
+    for (const auto p : moving) {
+        d.start[p] = m.points[p];
+        if (const auto s = toScreen(view, m.points[p]); s && distance(*s, at) < best) {
+            best = distance(*s, at);
+            d.anchor = m.points[p];
+        }
+    }
+    const auto cam = cameraOf(view);
+    d.vertical = v.kind == ViewKind::Perspective && (ImGui::GetIO().KeyShift != upAndDown);
+    if (v.kind != ViewKind::Perspective) d.planeNormal = cam.forward();
+    else if (d.vertical) d.planeNormal = mesh::normalised({cam.forward().x, 0, cam.forward().z});
+    else d.planeNormal = {0, 1, 0};
+    const auto ray = cam.rayThrough(at.x - v.min.x, at.y - v.min.y, v.size.x, v.size.y);
+    const double denom = mesh::dot(ray.direction, d.planeNormal);
+    if (std::abs(denom) < 1e-6) {   // the plane is edge-on: nothing sensible to drag along
+        d = {};
+        return false;
+    }
+    d.grabHit = ray.origin + ray.direction * (mesh::dot(d.anchor - ray.origin, d.planeNormal) / denom);
+    d.kind = ModelEditor::Drag::Kind::Plane;
+    e.edit.beginGesture();
+    if (byKey) status_ = "Moving: click to put it down, right-click or Esc cancels, G again slides along the edges.";
+    return true;
+}
+
+bool Viewer::startModelSlide(std::size_t view, ImVec2 at) {
+    auto& e = *modelEditor_;
+    auto& d = e.drag;
+    const auto moving = modelMovingPoints();
+    if (moving.empty()) return false;
+    const auto& m = e.edit.mesh();
+    auto neighbours = mesh::slideNeighbours(m, moving);
+    if (neighbours.empty()) {
+        status_ = "Nothing to slide along: no edge leads away from the selection.";
+        return false;
+    }
+    d = {};
+    d.kind = ModelEditor::Drag::Kind::Slide;
+    d.view = view;
+    d.press = at;
+    d.byKey = true;
+    d.neighbours = std::move(neighbours);
+    float best = 1e30f;
+    for (const auto p : moving) {
+        d.start[p] = m.points[p];
+        if (!d.neighbours.contains(p)) continue;
+        if (const auto s = toScreen(view, m.points[p]); s && distance(*s, at) < best) {
+            best = distance(*s, at);
+            d.anchorPoint = p;
+        }
+    }
+    e.edit.beginGesture();
+    status_ = "Sliding along the edges: move the pointer, click to put it down, right-click or Esc cancels.";
+    return true;
+}
+
+void Viewer::modelScale(Vec3 factors) {
+    const auto moving = modelMovingPoints();
+    const auto centre = modelSelectionCentre();
+    if (moving.empty() || !centre || factors.x == 0 || factors.y == 0 || factors.z == 0) return;
+    mesh::scalePoints(modelEditor_->edit.change(), moving, *centre, factors);
+    modelChanged();
+}
+
+void Viewer::modelTurnAbout(int axis, double degrees) {
+    const auto moving = modelMovingPoints();
+    const auto centre = modelSelectionCentre();
+    if (moving.empty() || !centre) return;
+    mesh::turnPointsAbout(modelEditor_->edit.change(), moving, *centre, axis, degrees);
+    modelChanged();
+}
+
 void Viewer::modelTurn(double degrees) {
     const auto moving = modelMovingPoints();
     const auto centre = modelSelectionCentre();
@@ -1017,43 +1366,61 @@ void Viewer::modelSelectByTexture(mesh::FaceTexture texture) {
     status_ = std::format("{} face{} in {}/{}.", e.faces.size(), e.faces.size() == 1 ? "" : "s", texture.archive, texture.record);
 }
 
-void Viewer::drawModelContextMenu() {
-    if (!modelEditor_ || !modelEditor_->menu) return;
+void Viewer::drawModelEmptyMenu() {
     auto& e = *modelEditor_;
-    const auto menu = *e.menu;
     const auto& m = e.edit.mesh();
     const bool faces = e.pick == ModelEditor::Pick::Faces;
-    const auto accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+    if (ImGui::MenuItem("Add box", nullptr, false)) modelAddBox();
+    ImGui::SetItemTooltip("The Shapes section's box: %.0f, %.0f, %.0f to %.0f, %.0f, %.0f", e.shape.min.x, e.shape.min.y,
+                          e.shape.min.z, e.shape.max.x, e.shape.max.y, e.shape.max.z);
+    if (ImGui::MenuItem("Add stairs")) modelAddStairs();
+    ImGui::Separator();
+    if (ImGui::MenuItem("Select all", "Ctrl+A")) {
+        e.clearPicked();
+        if (e.pick == ModelEditor::Pick::Edges) {
+            e.edges = mesh::edgesOf(m);
+        } else {
+            const auto n = static_cast<std::uint32_t>(faces ? m.faces.size() : m.points.size());
+            for (std::uint32_t i = 0; i < n; ++i) e.select(i, false);
+        }
+    }
+    if (ImGui::MenuItem("Frame the model", "F")) {
+        e.points.clear();
+        e.edges.clear();
+        e.faces.clear();
+        frameModel();
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Pick points", "1", e.pick == ModelEditor::Pick::Points)) e.pick = ModelEditor::Pick::Points;
+    if (ImGui::MenuItem("Pick edges", "2", e.pick == ModelEditor::Pick::Edges)) e.pick = ModelEditor::Pick::Edges;
+    if (ImGui::MenuItem("Pick faces", "3", e.pick == ModelEditor::Pick::Faces)) e.pick = ModelEditor::Pick::Faces;
+}
 
+void Viewer::drawModelContextMenu() {
+    if (!modelEditor_ || !modelEditor_->menu) return;
+    const auto menu = *modelEditor_->menu;
     if (!menu.element) {
         ImGui::TextDisabled("Nothing here");
         ImGui::Separator();
-        if (ImGui::MenuItem("Add box", nullptr, false)) modelAddBox();
-        ImGui::SetItemTooltip("The Shapes section's box: %.0f, %.0f, %.0f to %.0f, %.0f, %.0f", e.shape.min.x, e.shape.min.y,
-                              e.shape.min.z, e.shape.max.x, e.shape.max.y, e.shape.max.z);
-        if (ImGui::MenuItem("Add stairs")) modelAddStairs();
-        ImGui::Separator();
-        if (ImGui::MenuItem("Select all", "Ctrl+A")) {
-            e.clearPicked();
-            if (e.pick == ModelEditor::Pick::Edges) {
-                e.edges = mesh::edgesOf(m);
-            } else {
-                const auto n = static_cast<std::uint32_t>(faces ? m.faces.size() : m.points.size());
-                for (std::uint32_t i = 0; i < n; ++i) e.select(i, false);
-            }
-        }
-        if (ImGui::MenuItem("Frame the model", "F")) {
-            e.points.clear();
-            e.edges.clear();
-            e.faces.clear();
-            frameModel();
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Pick points", "1", e.pick == ModelEditor::Pick::Points)) e.pick = ModelEditor::Pick::Points;
-        if (ImGui::MenuItem("Pick edges", "2", e.pick == ModelEditor::Pick::Edges)) e.pick = ModelEditor::Pick::Edges;
-        if (ImGui::MenuItem("Pick faces", "3", e.pick == ModelEditor::Pick::Faces)) e.pick = ModelEditor::Pick::Faces;
+        drawModelEmptyMenu();
         return;
     }
+    drawModelSelectionMenu(menu);
+    // Opened away from the selection: what empty space offers, after the selection's menu.
+    if (menu.elsewhere && modelEditor_) {
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Empty space")) {
+            drawModelEmptyMenu();
+            ImGui::EndMenu();
+        }
+    }
+}
+
+void Viewer::drawModelSelectionMenu(const ModelEditor::Menu& menu) {
+    auto& e = *modelEditor_;
+    const auto& m = e.edit.mesh();
+    const bool faces = e.pick == ModelEditor::Pick::Faces;
+    const auto accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
 
     if (e.pick == ModelEditor::Pick::Edges) {
         const auto& list = e.edgesList();
@@ -1063,6 +1430,8 @@ void Viewer::drawModelContextMenu() {
         if (e.edges.size() > 1) ImGui::TextColored(accent, "%zu edges", e.edges.size());
         else ImGui::TextColored(accent, "Edge %u-%u  (%.0f long)", edge.first, edge.second, len);
         ImGui::Separator();
+        if (ImGui::MenuItem("Extrude", "E")) modelExtrudeAndMove(pointerView_, menu.screen);
+        ImGui::SetItemTooltip("A new face from each edge to a copy of it that follows the pointer; a click puts it down");
         if (ImGui::MenuItem(std::format("Grow out {:g}", e.extrudeBy).c_str())) modelExtendEdges(0);
         ImGui::SetItemTooltip("A new face from each edge, out across the face beside it");
         if (ImGui::MenuItem(std::format("Grow up {:g}", e.extrudeBy).c_str())) modelExtendEdges(1);
@@ -1083,6 +1452,8 @@ void Viewer::drawModelContextMenu() {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Remove (join the faces either side)", "Del")) modelDelete();
+        if (ImGui::MenuItem("Move with the pointer", "G")) startModelGrab(pointerView_, menu.screen, true);
+        if (ImGui::MenuItem("Slide along the edges", "G G")) startModelSlide(pointerView_, menu.screen);
         if (ImGui::MenuItem("Frame", "F")) frameModel();
         return;
     }
@@ -1094,6 +1465,9 @@ void Viewer::drawModelContextMenu() {
         if (e.faces.size() > 1) ImGui::TextColored(accent, "%zu faces", e.faces.size());
         else ImGui::TextColored(accent, "Face %u  (%d/%d)", f, texture.archive, texture.record);
         ImGui::Separator();
+        if (ImGui::MenuItem("Extrude", "E")) modelExtrudeAndMove(pointerView_, menu.screen);
+        ImGui::SetItemTooltip("The faces follow the pointer, joined to where they were by new sides; a click puts them down.\n"
+                              "In 3D floors and ceilings go up and down, walls across (Shift+E the other way)");
         if (ImGui::MenuItem(std::format("Push out {:g}", e.extrudeBy).c_str(), "X")) modelExtrude(-e.extrudeBy);
         if (ImGui::MenuItem(std::format("Pull in {:g}", e.extrudeBy).c_str(), "Shift+X")) modelExtrude(e.extrudeBy);
         if (ImGui::BeginMenu("Cut an opening")) {
@@ -1161,6 +1535,9 @@ void Viewer::drawModelContextMenu() {
         if (ImGui::MenuItem("Flip", "N")) modelFlip();
         if (ImGui::MenuItem("Copy", "Ctrl+D")) modelDuplicate();
         if (ImGui::MenuItem("Delete", "Del")) modelDelete();
+        if (ImGui::MenuItem("Move with the pointer", "G")) startModelGrab(pointerView_, menu.screen, true);
+        if (ImGui::MenuItem("Slide along the edges", "G G")) startModelSlide(pointerView_, menu.screen);
+        ImGui::SetItemTooltip("The faces slide along the edges leading away from them: a wall along the floor");
         if (ImGui::MenuItem("Frame", "F")) frameModel();
         return;
     }
@@ -1175,12 +1552,17 @@ void Viewer::drawModelContextMenu() {
     }
     ImGui::Separator();
     const auto n = e.points.size();
+    if (ImGui::MenuItem("Extrude", "E")) modelExtrudeAndMove(pointerView_, menu.screen);
+    ImGui::SetItemTooltip("Copies follow the pointer: where two picked points share a face's edge, a new face joins\n"
+                          "the edge to its copy; a point on its own is copied alone (fill faces to it with J)");
     if (ImGui::MenuItem(n == 2 ? "Cut the face between them" : "Fill a face between them", "J", false, n >= 2)) modelJoin();
     if (ImGui::MenuItem("Split the edge between them", nullptr, false, n == 2)) modelSplitEdge();
     if (ImGui::MenuItem("Weld into one", nullptr, false, n >= 2)) modelWeld();
     if (ImGui::MenuItem("Onto the grid")) modelSnapToGrid();
     ImGui::SetItemTooltip("Each selected point to the nearest %g grid corner", e.grid);
     ImGui::Separator();
+    if (ImGui::MenuItem("Move with the pointer", "G")) startModelGrab(pointerView_, menu.screen, true);
+    if (ImGui::MenuItem("Slide along an edge", "G G")) startModelSlide(pointerView_, menu.screen);
     if (ImGui::MenuItem("Delete", "Del")) modelDelete();
     if (ImGui::MenuItem("Frame", "F")) frameModel();
 }
@@ -1192,8 +1574,7 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
     const bool ctrl = (key.mod & SDL_KMOD_CTRL) != 0;
     const bool shift = (key.mod & SDL_KMOD_SHIFT) != 0;
     if (key.key == SDLK_ESCAPE) {
-        if (e.drag.kind == ModelEditor::Drag::Kind::Plane || e.drag.kind == ModelEditor::Drag::Kind::Axis) e.edit.cancelGesture();
-        if (e.drag.kind != ModelEditor::Drag::Kind::None) e.drag = {};
+        if (e.drag.kind != ModelEditor::Drag::Kind::None) cancelModelDrag();
         else if (!e.points.empty() || !e.edges.empty() || !e.faces.empty()) {
             e.points.clear();
             e.edges.clear();
@@ -1206,7 +1587,39 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
         maximised_ = maximised_ ? std::nullopt : std::optional(pointerView_);
         return true;
     }
+    if (key.key == SDLK_G && !ctrl) {
+        const auto at = ImGui::GetIO().MousePos;
+        if (e.drag.extruding) {
+            // Sliding starts from where things were; an extrusion has nowhere to slide from.
+        } else if (e.drag.kind == ModelEditor::Drag::Kind::Plane && e.drag.byKey) {
+            // G again: from moving freely to sliding along the edges (from where it all started).
+            const auto view = e.drag.view;
+            e.edit.cancelGesture();
+            e.drag = {};
+            modelChanged();
+            startModelSlide(view, at);
+        } else if (e.drag.kind == ModelEditor::Drag::Kind::Slide) {
+            const auto view = e.drag.view;
+            e.edit.cancelGesture();
+            e.drag = {};
+            modelChanged();
+            startModelGrab(view, at, true);
+        } else if (e.drag.kind == ModelEditor::Drag::Kind::None) {
+            if (!startModelGrab(pointerView_, at, true)) status_ = "Pick something to move first.";
+        }
+        return true;
+    }
     if (e.drag.kind != ModelEditor::Drag::Kind::None) return false;
+    if (key.key == SDLK_E && !ctrl && !looking_) {
+        modelExtrudeAndMove(pointerView_, ImGui::GetIO().MousePos);
+        return true;
+    }
+    if (key.key == SDLK_R && !ctrl) {
+        e.tool = e.tool == ModelEditor::Tool::Move ? ModelEditor::Tool::Turn
+                 : e.tool == ModelEditor::Tool::Turn ? ModelEditor::Tool::Scale
+                                                     : ModelEditor::Tool::Move;
+        return true;
+    }
     if (ctrl) {
         switch (key.key) {
             case SDLK_Z:
@@ -1523,6 +1936,17 @@ void Viewer::drawModelEditorPanel() {
     if (ImGui::RadioButton("Faces (3)", &pick, 2)) e.pick = ModelEditor::Pick::Faces;
     ImGui::SameLine();
     ImGui::TextDisabled("%zu selected", e.selectedCount());
+    int tool = static_cast<int>(e.tool);
+    if (ImGui::RadioButton("Move", &tool, 0)) e.tool = ModelEditor::Tool::Move;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Turn", &tool, 1)) e.tool = ModelEditor::Tool::Turn;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Scale", &tool, 2)) e.tool = ModelEditor::Tool::Scale;
+    ImGui::SameLine();
+    ImGui::TextDisabled("handles (R)");
+    ImGui::SetItemTooltip("Arrows move along an axis; rings turn about one (15-degree steps); square-ended arms scale\n"
+                          "along one, the middle square all three (sizes land on the grid). Shift: no snapping.\n"
+                          "G moves with the pointer, G again slides along the edges.");
     {
         int index = 0;
         for (std::size_t i = 0; i < kGridSteps.size(); ++i) {
@@ -1541,6 +1965,10 @@ void Viewer::drawModelEditorPanel() {
     ImGui::SameLine();
     ImGui::Checkbox("snap to points", &e.snapPoints);
     ImGui::SetItemTooltip("A dragged corner lands on any point near the pointer: the model's own or the reference's");
+    ImGui::SameLine();
+    ImGui::Checkbox("weld", &e.weldSnapped);
+    ImGui::SetItemTooltip("A corner put down on another point becomes one with it (else two points sit in one place,\n"
+                          "and faces through both can draw wrongly)");
     ImGui::SetNextItemWidth(80);
     const bool entered = ImGui::InputTextWithHint("##reference", "model id", e.referenceText, sizeof e.referenceText,
                                                   ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1642,9 +2070,18 @@ void Viewer::drawModelEditorPanel() {
         ImGui::InputScalarN("##moveby", ImGuiDataType_Double, e.moveBy, 3, nullptr, nullptr, "%.0f");
         ImGui::SameLine();
         if (ImGui::Button("Move", {-1, 0})) modelMove({e.moveBy[0], e.moveBy[1], e.moveBy[2]});
-        if (ImGui::Button("Turn -90")) modelTurn(-90);
+        ImGui::SetNextItemWidth(70);
+        ImGui::InputDouble("##turnby", &e.turnBy, 0, 0, "%.1f");
+        ImGui::SetItemTooltip("Degrees; about the selection's middle");
+        for (int a = 0; a < 3; ++a) {
+            ImGui::SameLine();
+            if (ImGui::Button(std::format("Turn {}##turnabout", "XYZ"[a]).c_str())) modelTurnAbout(a, e.turnBy);
+        }
+        ImGui::SetNextItemWidth(-60);
+        ImGui::InputScalarN("##scaleby", ImGuiDataType_Double, e.scaleBy, 3, nullptr, nullptr, "%.3f");
+        ImGui::SetItemTooltip("X, Y, Z factors about the selection's middle (0.5 halves, 2 doubles; -1 mirrors)");
         ImGui::SameLine();
-        if (ImGui::Button("Turn 90")) modelTurn(90);
+        if (ImGui::Button("Scale", {-1, 0})) modelScale({e.scaleBy[0], e.scaleBy[1], e.scaleBy[2]});
         if (ImGui::Button("Mirror X")) modelMirror(0);
         ImGui::SameLine();
         if (ImGui::Button("Mirror Y")) modelMirror(1);
@@ -1777,6 +2214,41 @@ Result<std::string> Viewer::checkModel(const std::filesystem::path& modDir) {
     log += std::format("dragged it a cell east in the Top view: the wall at x {:.0f}\n",
                        e.edit.mesh().centre(e.edit.mesh().faces[*east]).x);
 
+    // Extrude (E) in each pick kind, then cancel: the mesh and the selection are as they were, with no undo step.
+    {
+        const auto shape = e.edit.mesh();
+        const auto pickBefore = e.pick;
+        const auto wallMiddle = toScreen(1, shape.centre(shape.faces[*east]));
+        if (!wallMiddle) return fail("the Top view does not show the wall");
+        const mesh::FaceSet facesBefore = e.faces;
+        const auto wallEdges = [&] {
+            mesh::EdgeSet out;
+            const auto& p = shape.faces[*east].points;
+            for (std::size_t i = 0; i < p.size(); ++i) out.insert(mesh::edgeOf(p[i], p[(i + 1) % p.size()]));
+            return out;
+        }();
+        for (const auto pick : {ModelEditor::Pick::Faces, ModelEditor::Pick::Edges, ModelEditor::Pick::Points}) {
+            e.pick = pick;
+            e.faces = {*east};
+            e.edges = {*wallEdges.begin()};
+            e.points = mesh::pointsOf(shape, mesh::FaceSet{*east});
+            const auto picked = std::tuple{e.points, e.edges, e.faces};
+            modelExtrudeAndMove(1, *wallMiddle);
+            if (!e.drag.extruding) return fail("extrude did not start: " + status_);
+            if (e.edit.mesh().faces.size() <= shape.faces.size()) return fail("extrude made no faces");
+            cancelModelDrag();
+            if (e.edit.mesh().faces.size() != shape.faces.size() || e.edit.mesh().points.size() != shape.points.size()) {
+                return fail("cancelling an extrude left something behind");
+            }
+            if (std::tuple{e.points, e.edges, e.faces} != picked) return fail("cancelling an extrude lost the selection");
+        }
+        e.pick = pickBefore;
+        e.faces = facesBefore;
+        e.points.clear();
+        e.edges.clear();
+        log += "extrude (E) started and cancelled cleanly for faces, edges and points\n";
+    }
+
     modelApplyTexture({123, 1});
     {
         auto& m = e.edit.change();
@@ -1845,6 +2317,31 @@ Result<std::string> Viewer::checkModel(const std::filesystem::path& modDir) {
                            before, after, e.edit.mesh().faces.size());
         if (after != before + 1 || e.edit.mesh().faces.size() != before) return fail("the edge join did not undo cleanly");
         e.pick = ModelEditor::Pick::Faces;
+    }
+
+    // Scaling and turning the whole model, each undone; a slide started on the end wall and cancelled.
+    {
+        const auto all = e.edit.mesh().faces.size();
+        e.pick = ModelEditor::Pick::Faces;
+        e.faces.clear();
+        for (std::uint32_t f = 0; f < all; ++f) e.faces.insert(f);
+        const auto size = e.edit.mesh().bounds().size();
+        modelScale({2, 2, 2});
+        const auto doubled = e.edit.mesh().bounds().size();
+        if (!e.edit.undo()) return fail("undo after scaling failed");
+        modelTurnAbout(0, 90);
+        const auto tipped = e.edit.mesh().bounds().size();
+        if (!e.edit.undo()) return fail("undo after turning failed");
+        modelChanged();
+        log += std::format("scaled by 2: {:.0f} x {:.0f} x {:.0f} to {:.0f} x {:.0f} x {:.0f}; turned 90 about X: {:.0f} x {:.0f} x {:.0f}; "
+                           "both undone\n", size.x, size.y, size.z, doubled.x, doubled.y, doubled.z, tipped.x, tipped.y, tipped.z);
+        if (std::abs(doubled.x - 2 * size.x) > 1e-6 || std::abs(tipped.y - size.z) > 1e-6) return fail("scale or turn went wrong");
+        e.faces = {*east};
+        if (!startModelSlide(1, {400, 300})) return fail("the end wall has nothing to slide along");
+        const auto along = e.drag.neighbours.size();
+        e.edit.cancelGesture();
+        e.drag = {};
+        log += std::format("slide on the end wall: {} corners each with an edge to slide along\n", along);
     }
 
     const auto* info = catalog_.model(id);

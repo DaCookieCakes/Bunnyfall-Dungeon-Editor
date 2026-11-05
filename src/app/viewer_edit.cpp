@@ -230,7 +230,8 @@ void Viewer::placeAt(double x, double y) {
         const auto at = modelPlacement(x, y);
         const auto* info = catalog_.model(*placingModel_);
         if (!at || !info) return;
-        const auto file = toFile(at->first.transform.translation, at->second);
+        // Already snapped (to the grid, or by vertex snap to a rim).
+        const auto file = toFile(at->first.transform.translation, at->second, std::array<int, 3>{1, 1, 1});
         formats::RdbObject obj;
         obj.x = file[0];
         obj.y = file[1];
@@ -312,9 +313,9 @@ void Viewer::grabTo(double x, double y) {
     auto steps = moveSteps(pieces);
     if (!pieces && views_[pointerView_].kind == ViewKind::Perspective) steps[1] = 1;   // resting on what it is over
     const auto file = toFile(centre, grabBlock_, steps);
-    const std::array<std::int32_t, 3> offset{file[0] - obj.x, file[1] - obj.y, file[2] - obj.z};
+    const auto offset = vertexSnapOffset({file[0] - obj.x, file[1] - obj.y, file[2] - obj.z});
     const auto* now = edit_->object(moving_.front().slot);
-    if (now && now->x == file[0] && now->y == file[1] && now->z == file[2]) return;
+    if (now && now->x == obj.x + offset[0] && now->y == obj.y + offset[1] && now->z == obj.z + offset[2]) return;
     applyTransform(offset, 0);
 }
 
@@ -432,6 +433,10 @@ bool Viewer::handleEditKey(const SDL_KeyboardEvent& key) {
             case SDLK_U: showAll(); return true;
             case SDLK_I: toggleIsolate(); return true;
             case SDLK_F: frameSelection(); return true;
+            case SDLK_V:
+                vertexSnap_ = !vertexSnap_;
+                status_ = vertexSnap_ ? "Vertex snap on: models meet still models rim to rim." : "Vertex snap off.";
+                return true;
             case SDLK_R:
                 gizmoMode_ = gizmoMode_ == GizmoMode::Move ? GizmoMode::Turn : GizmoMode::Move;
                 status_ = gizmoMode_ == GizmoMode::Move ? "Move handles." : "Turn handles (3D and Top views).";
@@ -602,6 +607,46 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     if (!edit_->redo()) return fail("nothing to redo");
     editChanged();
     log += "undo and redo ok\n";
+
+    // Vertex snap: a copy of corridor 67000 moved to near the end of the first goes exactly onto it, end to end.
+    if (const auto* corridor = catalog_.model(67000)) {
+        armModel(corridor->id);
+        placeAt(cx, cy);
+        stopPlacing();
+        const auto first = selectedSlot();
+        if (!first) return fail("placing corridor 67000: " + status_);
+        const auto a = *edit_->object(*first);
+        duplicateSelected();
+        const auto copy = selectedSlot();
+        if (!copy) return fail("copying the corridor");
+        const auto b = *edit_->object(*copy);
+        const auto size = corridor->bounds.size();
+        const bool alongX = size.x >= size.z;
+        const auto length = static_cast<std::int32_t>(std::lround(alongX ? size.x : size.z));
+        vertexSnap_ = true;
+        for (const int side : {1, -1}) {
+            const std::array<std::int32_t, 3> want{a.x - b.x + (alongX ? side * length : 0), a.y - b.y,
+                                                   a.z - b.z + (alongX ? 0 : side * length)};
+            beginTransform();
+            const auto got = vertexSnapOffset({want[0] + 9, want[1] + 5, want[2] - 7});   // near, not on
+            endTransform(false);
+            if (got != want) {
+                vertexSnap_ = false;
+                return fail(std::format("vertex snap put the copy at offset ({}, {}, {}), not ({}, {}, {})", got[0], got[1],
+                                        got[2], want[0], want[1], want[2]));
+            }
+        }
+        vertexSnap_ = false;
+        beginTransform();
+        const auto off = vertexSnapOffset({length + 9, 0, 0});
+        endTransform(false);
+        if (off != std::array<std::int32_t, 3>{length + 9, 0, 0}) return fail("vertex snap moved the copy while off");
+        edit_->undo();   // the copy
+        edit_->undo();   // the corridor
+        editChanged();
+        setSelection({*pieceRef});
+        log += std::format("vertex snap put a copy of corridor 67000 end to end with it, both ends ({} long)\n", length);
+    }
 
     // Several at once: the last three placed, moved and turned together, copied and deleted, then all undone.
     setSelection({placedRefs.end() - 3, placedRefs.end()});

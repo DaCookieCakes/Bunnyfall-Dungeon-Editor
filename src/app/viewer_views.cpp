@@ -159,8 +159,20 @@ void Viewer::drawViewGrid() {
             if (press.moved < 6 && ImGui::GetTime() - press.time < 0.5) {
                 pointerView_ = press.view;
                 auto& e = *modelEditor_;
-                ModelEditor::Menu request{pickModelElement(press.view, press.at), std::nullopt, press.at};
-                if (request.element) {
+                ModelEditor::Menu request;
+                request.element = pickModelElement(press.view, press.at);
+                request.screen = press.at;
+                if (!request.element && e.selectedCount() > 0) {
+                    // Away from everything, with something picked: the selection's menu all the same.
+                    request.elsewhere = true;
+                    if (e.pick == ModelEditor::Pick::Points) request.element = *e.points.begin();
+                    else if (e.pick == ModelEditor::Pick::Faces) request.element = *e.faces.begin();
+                    else if (const auto& list = e.edgesList(); true) {
+                        const auto it = std::ranges::find(list, *e.edges.begin());
+                        if (it != list.end()) request.element = static_cast<std::uint32_t>(it - list.begin());
+                    }
+                    if (!request.element) request.elsewhere = false;
+                } else if (request.element) {
                     if (!e.isSelected(*request.element)) {   // like Hammer: it selects
                         e.clearPicked();
                         e.select(*request.element, false);
@@ -264,6 +276,7 @@ void Viewer::drawView(std::size_t index, ImVec2 min, ImVec2 size) {
         viewInput(index, overHandle);
     } else {
         drawLogicLinks(index);
+        drawSnapRim(index);
         const bool overHandle = drawGizmo(index);
         viewInput(index, overHandle);
     }

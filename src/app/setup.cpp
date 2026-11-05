@@ -77,7 +77,7 @@ bool drawFields(SDL_Window* window, Config& config) {
     const auto arena2 = arena2Problem(config.arena2);
     verdict(arena2, true);
     ImGui::Spacing();
-    ImGui::TextWrapped("Your Bunnyfall checkout. Dungeons are exported into its vendor/bunnyfall-dungeons folder.");
+    ImGui::TextWrapped("Your Bunnyfall checkout. A project exports into its vendor/ folder, as a mod of its own (the Project panel's Mod tab).");
     pathField("##bunnyfall", config.bunnyfall, 1, window, false);
     verdict(bunnyfallProblem(config.bunnyfall), false);
     ImGui::Spacing();

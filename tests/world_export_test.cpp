@@ -5,6 +5,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -139,7 +140,16 @@ TEST_CASE("ARENA2: a project exports its blocks and places, and a re-export tidi
     auto report = exportProject(p, f.world, dir.path);
     REQUIRE_MESSAGE(report, (report ? "" : report.error().message));
     CHECK_FALSE(report->hasErrors());
-    CHECK(report->written.size() == 3);
+    CHECK(report->written.size() == 5);   // two blocks, the place, the mod's manifest and its README
+    {
+        std::ifstream manifestFile(dir.path / std::string(kModManifestName));
+        REQUIRE(manifestFile);
+        const auto manifest = de::exporter::Json::parse(manifestFile);
+        CHECK(manifest["format"] == kModManifestFormat);
+        CHECK(manifest["title"] == p.name);
+        CHECK(manifest["idRange"] == 0);
+        CHECK(std::filesystem::exists(dir.path / "README.md"));
+    }
 
     // The copied block ships as a patch over N0000071 that rebuilds under its own name.
     std::ifstream patchFile(dir.path / "WorldDataPatches" / (copiedName + ".json"));
@@ -196,4 +206,45 @@ TEST_CASE("ARENA2: a project with errors writes nothing") {
     CHECK(report->hasErrors());
     CHECK(report->written.empty());
     CHECK_FALSE(std::filesystem::exists(dir.path));
+}
+
+TEST_CASE("mod folders: another mod's folder, a shared id range and a shared block are found") {
+    TempDir dir;
+    const auto vendor = dir.path / "vendor";
+    const auto writeManifest = [&](const std::string& folder, int range) {
+        std::filesystem::create_directories(vendor / folder / "WorldDataPatches");
+        std::ofstream(vendor / folder / std::string(kModManifestName))
+            << de::exporter::Json{{"format", kModManifestFormat}, {"title", folder}, {"idRange", range}}.dump();
+    };
+    writeManifest("crypts-of-hope", 0);
+    std::ofstream(vendor / "crypts-of-hope" / "WorldDataPatches" / "N0000071.RDB.json") << "{}";
+    std::filesystem::create_directories(vendor / "aquatic-sprites" / "WorldData");
+    std::ofstream(vendor / "aquatic-sprites" / "WorldData" / "X.json") << "{}";
+
+    const auto mods = editorModsIn(vendor);
+    REQUIRE(mods.size() == 1);
+    CHECK(mods[0].folder == "crypts-of-hope");
+    CHECK(freeIdRange(vendor, "mine") == 1);
+    CHECK(freeIdRange(vendor, "crypts-of-hope") == 0);   // its own range is free to itself
+
+    Project p;
+    p.mod.folder = "mine";
+    const auto hasError = [](const std::vector<Issue>& issues, std::string_view text) {
+        return std::ranges::any_of(issues, [&](const Issue& i) { return i.severity == Issue::Severity::Error && i.text.find(text) != std::string::npos; });
+    };
+    // Range 0 is the other mod's.
+    CHECK(hasError(checkModFolder(p, vendor / "mine"), "uses id range 0 too"));
+    REQUIRE(p.setIdRange(1));
+    CHECK(checkModFolder(p, vendor / "mine").empty());
+    // A folder the editor did not make is never written into.
+    CHECK(hasError(checkModFolder(p, vendor / "aquatic-sprites"), "did not write"));
+    // Nor a name Bunnyfall cannot take for a mod id.
+    CHECK(hasError(checkModFolder(p, vendor / "My Mod"), "a-z, 0-9"));
+    // A classic block both mods patch: a warning (once "mine" is an editor mod with a range of its own).
+    writeManifest("mine", 1);
+    std::ofstream(vendor / "mine" / "WorldDataPatches" / "N0000071.RDB.json") << "{}";
+    const auto issues = checkModFolder(p, vendor / "mine");
+    REQUIRE(issues.size() == 1);
+    CHECK(issues[0].severity == Issue::Severity::Warning);
+    CHECK(issues[0].text.find("N0000071.RDB.json") != std::string::npos);
 }

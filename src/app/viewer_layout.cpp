@@ -122,7 +122,7 @@ void Viewer::drawUi() {
             if (ImGui::BeginTable("keys", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
                 ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 170);
                 const std::pair<const char*, const char*> rows[] = {
-                    {"Right-drag (3D)", "look around; WASD moves, Q/E down/up, Shift faster"},
+                    {"Right-drag (3D)", "look around; WASD moves, Shift faster"},
                     {"Wheel (3D)", "flying speed"},
                     {"Right/middle-drag (2D)", "pan"},
                     {"Middle-drag (3D)", "slide the camera"},
@@ -138,6 +138,7 @@ void Viewer::drawUi() {
                     {"Handles", "arrows move along X/Y/Z, the square freely; rings turn about X/Y/Z (R switches)"},
                     {"G", "move the selection with the pointer (2D views keep its height or depth)"},
                     {"[ and ]", "turn the model being placed (Shift: by the turn snap)"},
+                    {"V", "vertex snap: placed and moved models meet open edges that match point for point"},
                     {"H / U / I", "hide the selection / show everything / isolate the selection's block"},
                     {"Arrows, PgUp/PgDn", "nudge (Shift: a big step)"},
                     {"Ctrl+D / Delete", "duplicate / delete"},
@@ -148,12 +149,15 @@ void Viewer::drawUi() {
                     {"Model editor", "File > New model, or a model's Edit button (Models > Custom)"},
                     {"  1 / 2 / 3 / Tab", "pick points / edges / faces"},
                     {"  Drag the selection", "move it (3D: Shift for up and down); corners snap to the grid or a point"},
+                    {"  E", "extrude faces, edges or points: the copies follow the pointer, a click puts them down"},
                     {"  X / Shift+X", "push faces out (a wall into a corridor) / pull them in"},
                     {"  J", "two points: cut the face between them; three or more: fill a face; two edges: cut between"},
                     {"  N / Del / Ctrl+D", "flip faces / delete / copy"},
                     {"  Arrows, PgUp/PgDn", "move the selection a grid step"},
                     {"  [ and ]", "a smaller / bigger grid"},
-                    {"  Right-click", "a menu for the face, point or empty space under the pointer"},
+                    {"  R", "handles: move / turn / scale (Shift while dragging: no snapping)"},
+                    {"  G, then G", "move with the pointer (click puts it down); G again slides along the edges"},
+                    {"  Right-click", "a menu for the face, edge or point under the pointer; elsewhere, the selection's"},
                 };
                 for (const auto& [k, what] : rows) {
                     ImGui::TableNextRow();
@@ -261,6 +265,10 @@ void Viewer::drawToolbar() {
         ImGui::SameLine();
         toggle("Piece snap", pieceSnap_,
                "Architecture and doors snap to the classic grid: 64 units across, 128 up, quarter turns");
+        ImGui::SameLine();
+        toggle("Vertex snap", vertexSnap_,
+               "A model being placed or moved goes onto a model already there where their open edges (a corridor's\n"
+               "mouth, a cave tile's side) match point for point, nearest the pointer; the rim it meets is marked (V)");
         separator();
         toggle("Grid", drawOptions_.grid, "The sizing grid in the 3D view");
         ImGui::SameLine();

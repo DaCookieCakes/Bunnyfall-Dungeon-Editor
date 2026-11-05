@@ -58,9 +58,31 @@ Backup of the original `modWorldData.js`: `bunnyfall-backups/2026-11-04/` at the
 
 Daggerfall Unity has no such loader: a block placing a custom model shows nothing there in DFU.
 
+### 4. Mods the editor makes declare themselves (2026-11-05)
+
+Each editor project can export as a mod of its own: `vendor/<folder>/` (a-z, 0-9 and -), marked with the
+`dungeon-editor.mod.json` the editor writes (`bunnyfall-dungeon-mod/1`: title, author, description, id range).
+Bunnyfall gives every such folder the switch `bunnyfall-dungeons` has, so a new mod needs no code. The id range keeps
+two editor mods' block names, location ids and model ids apart.
+
+| File | Change |
+|---|---|
+| `src/systems/editorMods.js` (new) | Globs `vendor/*/dungeon-editor.mod.json` (eager, browser only; empty under Node), checks each manifest (format, title, folder name) and lists the mods as `EDITOR_MODS`. A bad one is warned about and skipped. `bunnyfall-dungeons` is left out: it is declared by hand. |
+| `src/systems/modSettings.js` | The hand-written table is now `DECLARED_MOD_SETTINGS`. `MOD_SETTINGS` is that plus one entry per editor mod (`editorMod: true`, one key `Enabled`, default on, the manifest's description or the new string `mods.editorDungeons.Enabled.description`). A declared mod always wins over a manifest of the same name. |
+| `src/systems/features.js` | A Features row per editor mod, after Bunnyfall Dungeons' ("Takes effect when the game next loads"). |
+| `src/ui/settings/settingsMap.js` | Those rows under Gameplay > Dungeons, after `feat:mod-bunnyfall-dungeons`. |
+| `src/systems/online/onlineLane.js` | `ONLINE_ROOM_MOD_KEYS` gets `{ Enabled: true }` per editor mod: the room owns the switch, as for Bunnyfall Dungeons. |
+| `vendor/bunnyfall-dungeons/README.md` | Mentions the manifest the export now writes (ignored there). |
+
+The world-data loader (`scenes/modWorldData.js`) and the model loader (`world/editorModels.js`) already glob
+`vendor/*/` and ask `modSetting(vendor, 'Enabled')`, so they needed nothing. Checked: `npx eslint` clean on the five
+files, `npx vite build` passes, and under Node `readEditorMods` accepts a good manifest and skips a bad folder name
+and `bunnyfall-dungeons`. Not yet seen in the game with a second mod. Needs `node tools/l10nExtract.mjs` for the new
+string before the PR. Backups: `bunnyfall-backups/2026-11-05/` at the workspace root.
+
 ## Still to make
 
-### 4. An explicit texture table per dungeon (planned)
+### 5. An explicit texture table per dungeon (planned)
 
 A dungeon's wall, floor and sewer textures come from a table seeded by its location id and climate
 (`world/dungeon/dungeonTextures.js`). The editor gives each placed piece one of the table's slots (texture "twins":
@@ -68,7 +90,7 @@ A dungeon's wall, floor and sewer textures come from a table seeded by its locat
 To let a designer choose them: an optional field in the editor's location JSON (the six archives) that
 `dungeonTextureTable` uses when present. DFU ignores the field. Not yet written.
 
-### 5. New messages for dungeon actions (needed later, not started)
+### 6. New messages for dungeon actions (needed later, not started)
 
 "Show text", "show text with input" and door-text actions can only show records already in the player's TEXT.RSC
 (10 messages, 5 riddles, 13 door texts). Authored dungeons will want their own words. Wanted: a per-mod text table

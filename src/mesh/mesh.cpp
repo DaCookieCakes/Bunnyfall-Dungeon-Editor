@@ -5,6 +5,7 @@
 #include <format>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <utility>
 
 namespace de::mesh {
@@ -134,29 +135,44 @@ std::vector<std::array<std::uint32_t, 3>> triangulate(const Mesh& mesh, const Fa
     }
 
     // Ear clipping: cut off a corner that turns the polygon's way and holds no other point, until a triangle is left.
-    std::vector<std::uint32_t> left(count);
-    for (std::uint32_t i = 0; i < count; ++i) left[i] = i;
+    // A point stacked on another (a corner snapped onto a corner and not welded) is passed over: it adds nothing, and
+    // as an "other point" sitting on an ear's corner it would block every ear there.
+    auto same = [&](std::uint32_t i, std::uint32_t j) {
+        return std::abs(flat[i][0] - flat[j][0]) < 1e-6 && std::abs(flat[i][1] - flat[j][1]) < 1e-6;
+    };
+    std::vector<std::uint32_t> left;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (left.empty() || !same(i, left.back())) left.push_back(i);
+    }
+    while (left.size() > 1 && same(left.front(), left.back())) left.pop_back();
     std::size_t guard = count * count;
     while (left.size() > 3 && guard-- > 0) {
-        bool cut = false;
-        for (std::size_t i = 0; i < left.size(); ++i) {
+        std::optional<std::size_t> ear, fallback;
+        double fallbackTurn = 1e-9;
+        for (std::size_t i = 0; i < left.size() && !ear; ++i) {
             const auto a = left[(i + left.size() - 1) % left.size()], b = left[i], c = left[(i + 1) % left.size()];
-            if (cross2(flat[a], flat[b], flat[c]) * sign <= 1e-9) continue;
+            const double turn = cross2(flat[a], flat[b], flat[c]) * sign;
+            if (turn <= 1e-9) continue;
+            if (turn > fallbackTurn) {
+                fallbackTurn = turn;
+                fallback = i;
+            }
             bool empty = true;
             for (const auto o : left) {
-                if (o == a || o == b || o == c) continue;
+                if (o == a || o == b || o == c || same(o, a) || same(o, b) || same(o, c)) continue;
                 if (insideTriangle(flat[o], flat[a], flat[b], flat[c], sign)) {
                     empty = false;
                     break;
                 }
             }
-            if (!empty) continue;
-            out.push_back({a, b, c});
-            left.erase(left.begin() + static_cast<std::ptrdiff_t>(i));
-            cut = true;
-            break;
+            if (empty) ear = i;
         }
-        if (!cut) break;   // a self-crossing face: what is left stays uncovered
+        // No clean ear (a face that crosses itself): the sharpest corner that turns the right way, so the face is
+        // still drawn, if not quite as meant. With none at all, what is left has no area.
+        const auto i = ear ? ear : fallback;
+        if (!i) break;
+        out.push_back({left[(*i + left.size() - 1) % left.size()], left[*i], left[(*i + 1) % left.size()]});
+        left.erase(left.begin() + static_cast<std::ptrdiff_t>(*i));
     }
     if (left.size() == 3 && std::abs(cross2(flat[left[0]], flat[left[1]], flat[left[2]])) > 1e-9) {
         out.push_back({left[0], left[1], left[2]});
@@ -245,6 +261,13 @@ std::vector<std::string> checkMesh(const Mesh& mesh) {
             problems.push_back(std::format("face {} uses a point twice", f));
             continue;
         }
+        bool stacked = false;
+        for (std::size_t i = 0; i < face.points.size() && !stacked; ++i) {
+            for (std::size_t j = i + 1; j < face.points.size() && !stacked; ++j) {
+                stacked = length(mesh.points[face.points[i]] - mesh.points[face.points[j]]) < 1e-3;
+            }
+        }
+        if (stacked) problems.push_back(std::format("face {} has two points in one place (Weld or Merge close points joins them)", f));
         const Vec3 n = mesh.normal(face);
         if (length(n) == 0) {
             problems.push_back(std::format("face {} has no area", f));

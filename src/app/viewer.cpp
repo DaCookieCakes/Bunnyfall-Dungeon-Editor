@@ -246,8 +246,7 @@ void Viewer::update(double seconds) {
     if (keys[SDL_SCANCODE_S]) add(f, -1);
     if (keys[SDL_SCANCODE_D]) add(r, 1);
     if (keys[SDL_SCANCODE_A]) add(r, -1);
-    if (keys[SDL_SCANCODE_E] || keys[SDL_SCANCODE_SPACE]) dy += 1;
-    if (keys[SDL_SCANCODE_Q]) dy -= 1;
+    if (keys[SDL_SCANCODE_SPACE]) dy += 1;
     const double boost = keys[SDL_SCANCODE_LSHIFT] ? 4 : 1;
     const double step = speed_ * boost * seconds;
     camera_.position = {camera_.position.x + dx * step, camera_.position.y + dy * step,
@@ -518,7 +517,7 @@ void Viewer::drawViewPanel() {
     const auto& p = camera_.position;
     ImGui::Text("camera (%.0f, %.0f, %.0f)  yaw %.0f", p.x, p.y, p.z, camera_.yaw * 180 / std::numbers::pi);
     ImGui::Text("speed %.0f units/s (wheel)", speed_);
-    ImGui::TextDisabled("Right-drag: look  WASD: move  Q/E: down/up  Shift: fast  Left-click: select");
+    ImGui::TextDisabled("Right-drag: look  WASD: move  Shift: fast  Left-click: select");
     const auto problems = textures_.problems().size() + models_.problems().size();
     if (problems > 0 && ImGui::CollapsingHeader(std::format("{} problems", problems).c_str())) {
         for (const auto& p2 : textures_.problems()) ImGui::TextWrapped("%s", p2.c_str());

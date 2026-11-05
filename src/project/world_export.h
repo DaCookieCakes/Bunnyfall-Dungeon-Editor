@@ -11,6 +11,7 @@
 #include "project/project.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,28 @@ std::optional<catalog::SocketMap> socketsOf(const Project& project, const World&
 /// A block's role, from its name's first letter.
 formats::RdbRole roleOf(const std::string& blockName);
 
+/// The file that makes a vendor folder a mod Bunnyfall loads by itself (src/systems/editorMods.js).
+inline constexpr std::string_view kModManifestName = "dungeon-editor.mod.json";
+inline constexpr std::string_view kModManifestFormat = "bunnyfall-dungeon-mod/1";
+
+/// The mod's manifest: its title (the project's name), author, description and id range.
+exporter::Json modManifestJson(const Project& project);
+
+/// A mod the editor made, found beside the project's own.
+struct EditorMod {
+    std::string folder;
+    std::string title;
+    int idRange = 0;
+};
+/// Every mod in `vendorDir` (Bunnyfall's vendor/) that holds a dungeon-editor.mod.json.
+std::vector<EditorMod> editorModsIn(const std::filesystem::path& vendorDir);
+/// The lowest id range no mod in `vendorDir` but `ownFolder` uses, or nothing when all are taken.
+std::optional<int> freeIdRange(const std::filesystem::path& vendorDir, std::string_view ownFolder);
+
+/// What is wrong with exporting into `modDir`: a folder another mod owns, an id range a mod beside it uses too, block
+/// files two mods both ship, a Bunnyfall too old to load a mod of this name.
+std::vector<Issue> checkModFolder(const Project& project, const std::filesystem::path& modDir);
+
 struct ExportReport {
     std::vector<Issue> issues;
     std::vector<std::string> written;   ///< Paths relative to the mod folder.
@@ -55,8 +78,9 @@ struct ExportReport {
     [[nodiscard]] bool hasErrors() const;
 };
 
-/// Checks the project and, when nothing is an error, writes it into `modDir` (Bunnyfall's vendor/<mod>/). Files an
-/// earlier export wrote and this one does not are removed; files it did not write are never touched.
+/// Checks the project and the folder and, when nothing is an error, writes it into `modDir` (Bunnyfall's
+/// vendor/<mod>/) with the mod's manifest, and a README when the folder has none of its own. Files an earlier export
+/// wrote and this one does not are removed; files it did not write are never touched.
 Result<ExportReport> exportProject(const Project& project, const World& world, const std::filesystem::path& modDir);
 
 } // namespace de::project

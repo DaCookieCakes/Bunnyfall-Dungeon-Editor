@@ -67,8 +67,23 @@ bool inputString(const char* label, std::string& value, std::size_t capacity = 6
 // ---- files ----
 
 void Viewer::setModFolder(std::filesystem::path dir) {
-    setPatchFolder(dir / "WorldDataPatches");
-    modDir_ = std::move(dir);
+    modOverride_ = std::move(dir);
+    applyModFolder();
+}
+
+void Viewer::applyModFolder() {
+    std::optional<std::filesystem::path> dir = modOverride_;
+    if (!dir && config_ && !bunnyfallProblem(config_->bunnyfall) && !project::modFolderProblem(project_.mod.folder)) {
+        dir = config_->modFolder(project_.mod.folder);
+    }
+    modDir_ = dir;
+    if (patchOverride_) {
+        patches_.emplace(*patchOverride_);
+    } else if (dir) {
+        patches_.emplace(*dir / "WorldDataPatches");
+    } else {
+        patches_.reset();
+    }
 }
 
 Result<void> Viewer::setProjectFile(std::filesystem::path file) {
@@ -83,6 +98,7 @@ Result<void> Viewer::setProjectFile(std::filesystem::path file) {
     projectDirty_ = false;
     issuesStale_ = true;
     if (!project_.dungeons().empty()) currentDungeon_ = project_.dungeons().front().number;
+    applyModFolder();
     registerCustomModels();
     reloadPrefabs();
     return {};
@@ -103,7 +119,7 @@ void Viewer::saveProject() {
 
 void Viewer::exportProject() {
     if (!modDir_) {
-        status_ = "No mod folder: start the editor with --mod <folder>.";
+        status_ = "No mod folder: set the Bunnyfall checkout in File > Paths (or start with --mod <folder>).";
         return;
     }
     if (edit_ && edit_->dirty() && isProjectBlock(edit_->name())) saveEdit();   // what is on screen is what ships
@@ -115,6 +131,7 @@ void Viewer::exportProject() {
     }
     issues_ = report->issues;
     issuesStale_ = false;
+    refreshOtherMods();
     if (report->hasErrors()) {
         status_ = "Not exported: fix the errors listed in the Project panel first.";
         return;
@@ -215,6 +232,100 @@ int Viewer::addCaps(project::ProjectDungeon& d) {
     return added;
 }
 
+void Viewer::refreshOtherMods() {
+    otherMods_ = modDir_ ? project::editorModsIn(modDir_->parent_path()) : std::vector<project::EditorMod>{};
+    modIssues_ = modDir_ ? project::checkModFolder(project_, *modDir_) : std::vector<project::Issue>{};
+}
+
+void Viewer::drawModSettings() {
+    ImGui::TextWrapped("The project exports as a mod of its own: a folder of Bunnyfall's vendor/. Bunnyfall gives it a "
+                       "switch under Settings > Gameplay > Dungeons, titled with the project's name.");
+    ImGui::Spacing();
+    auto& mod = project_.mod;
+    ImGui::SetNextItemWidth(260);
+    std::string folder = mod.folder;
+    inputString("Folder", folder);
+    if (folder != mod.folder) {
+        mod.folder = folder;
+        markProjectChanged();
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        applyModFolder();
+        // A project that has numbered nothing yet moves to a range no other mod uses.
+        if (modDir_ && !project_.numbersIssued()) {
+            if (const auto free = project::freeIdRange(modDir_->parent_path(), mod.folder)) (void)project_.setIdRange(*free);
+        }
+        refreshOtherMods();
+        issuesStale_ = true;
+    }
+    if (const auto problem = project::modFolderProblem(mod.folder)) {
+        ImGui::SameLine();
+        ImGui::TextColored({1.0f, 0.45f, 0.4f, 1.0f}, "%s", problem->c_str());
+    }
+    ImGui::SetNextItemWidth(260);
+    if (inputString("Author", mod.author)) markProjectChanged();
+    std::vector<char> buffer(512, '\0');
+    std::copy_n(mod.description.begin(), std::min(mod.description.size(), buffer.size() - 1), buffer.begin());
+    if (ImGui::InputTextMultiline("Description", buffer.data(), buffer.size(), {420, 60})) {
+        mod.description = buffer.data();
+        markProjectChanged();
+    }
+    ImGui::SetItemTooltip("The switch's note in Bunnyfall's settings. Empty: \"Dungeons built with the Bunnyfall Dungeon Editor.\"");
+
+    // The id range.
+    ImGui::Spacing();
+    ImGui::BeginDisabled(project_.numbersIssued());
+    int range = mod.idRange;
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::Combo("Id range", &range, "0\0" "1\0" "2\0" "3\0" "4\0" "5\0" "6\0" "7\0")) {
+        if (auto r = project_.setIdRange(range); !r) status_ = r.error().message;
+        else markProjectChanged();
+        refreshOtherMods();
+        issuesStale_ = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled(project_.numbersIssued() ? "(fixed: the project has numbered blocks, dungeons or models)"
+                                                 : "(fixed once the first block, dungeon or model is made)");
+    ImGui::TextWrapped("Block names, location ids and model ids come from it, so two mods with different ranges never "
+                       "take each other's.");
+
+    // Where it goes, and who else is there.
+    ImGui::Spacing();
+    ImGui::SeparatorText("In Bunnyfall");
+    if (!modDir_) {
+        ImGui::TextColored({1.0f, 0.8f, 0.35f, 1.0f}, "No Bunnyfall checkout: set one in File > Paths to export.");
+        return;
+    }
+    ImGui::TextDisabled("%s", modDir_->string().c_str());
+    if (modOverride_) ImGui::TextDisabled("(from --mod)");
+    if (otherMods_.empty()) {
+        ImGui::TextDisabled("No other editor mods in vendor/ yet.");
+    } else if (ImGui::BeginTable("mods", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("Folder");
+        ImGui::TableSetupColumn("Title");
+        ImGui::TableSetupColumn("Range");
+        ImGui::TableHeadersRow();
+        for (const auto& m : otherMods_) {
+            const bool self = m.folder == mod.folder;
+            const bool clash = !self && m.idRange == mod.idRange;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%s%s", m.folder.c_str(), self ? " (this one, as last exported)" : "");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(m.title.c_str());
+            ImGui::TableNextColumn();
+            if (clash) ImGui::TextColored({1.0f, 0.45f, 0.4f, 1.0f}, "%d (the same!)", m.idRange);
+            else ImGui::Text("%d", m.idRange);
+        }
+        ImGui::EndTable();
+    }
+    for (const auto& issue : modIssues_) {
+        const bool error = issue.severity == project::Issue::Severity::Error;
+        ImGui::TextColored(error ? ImVec4{1.0f, 0.45f, 0.4f, 1.0f} : ImVec4{1.0f, 0.8f, 0.35f, 1.0f}, "%s", issue.text.c_str());
+    }
+}
+
 void Viewer::refreshIssues() {
     if (!issuesStale_) return;
     issues_.clear();
@@ -234,6 +345,7 @@ void Viewer::drawProjectPanel() {
     }
     ImGui::SetNextItemWidth(220);
     if (inputString("Project name", project_.name)) markProjectChanged();
+    ImGui::SetItemTooltip("Also the mod's title in Bunnyfall's settings");
     ImGui::SameLine();
     if (ImGui::Button(projectDirty_ ? "Save project*" : "Save project")) saveProject();
     ImGui::SameLine();
@@ -282,6 +394,14 @@ void Viewer::drawProjectPanel() {
         }
         if (ImGui::BeginTabItem("Blocks")) {
             drawProjectBlocks();
+            ImGui::EndTabItem();
+        }
+        const bool modTab = ImGui::BeginTabItem("Mod");
+        if (ImGui::IsItemActivated() || (modTab && ImGui::IsWindowAppearing())) {
+            refreshOtherMods();
+        }
+        if (modTab) {
+            drawModSettings();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

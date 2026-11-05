@@ -74,7 +74,7 @@ add_library(de_export STATIC src/export/dfu_json.cpp src/export/world_data_patch
 target_link_libraries(de_export PUBLIC de_formats nlohmann_json_header PRIVATE de_warnings)
 
 # ---- edit: changing a block (entities, undo, save identities); no GPU, no UI ----
-add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp src/edit/transform.cpp)
+add_library(de_edit STATIC src/edit/entities.cpp src/edit/block_edit.cpp src/edit/transform.cpp src/edit/vertex_snap.cpp)
 target_link_libraries(de_edit PUBLIC de_catalog PRIVATE de_warnings)
 
 # ---- logic: dungeon actions as the game reads them; no GPU, no UI ----
@@ -126,6 +126,7 @@ if(DE_BUILD_APP)
     src/app/viewer_project.cpp
     src/app/viewer_views.cpp
     src/app/viewer_select.cpp
+    src/app/viewer_snap.cpp
     src/app/viewer_palette.cpp
     src/app/viewer_outliner.cpp
     src/app/viewer_logic.cpp
@@ -185,6 +186,7 @@ if(DE_BUILD_TESTS)
     tests/project_test.cpp
     tests/world_export_test.cpp
     tests/mesh_test.cpp
+    tests/vertex_snap_test.cpp
   )
   target_link_libraries(de_tests PRIVATE de_catalog de_geometry de_scene de_export de_edit de_logic de_project de_mesh doctest::doctest
                         de_warnings)

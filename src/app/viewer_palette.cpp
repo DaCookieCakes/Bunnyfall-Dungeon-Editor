@@ -87,9 +87,15 @@ std::optional<std::pair<scene::ModelInstance, std::size_t>> Viewer::modelPlaceme
     const auto turned = catalog::transformBox(info->bounds, rotation, {0, 0, 0});
     const auto origin = edit::restingModelOrigin(s->point, s->normal, turned);
     // Snapped as the file will hold it, so the preview is where the click puts it.
-    const auto file = toFile(origin, s->sceneBlock, isPiece(*placingModel_) ? std::optional(moveSteps(true)) : std::nullopt);
-    const auto at = catalog::fromFilePosition(file[0], file[1], file[2]) + scene_.blocks[s->sceneBlock].origin;
-    return std::pair{scene::ModelInstance{*placingModel_, {rotation, at}, {static_cast<std::size_t>(-1), 0, 0}}, s->sceneBlock};
+    auto file = toFile(origin, s->sceneBlock, isPiece(*placingModel_) ? std::optional(moveSteps(true)) : std::nullopt);
+    auto at = catalog::fromFilePosition(file[0], file[1], file[2]) + scene_.blocks[s->sceneBlock].origin;
+    scene::ModelInstance instance{*placingModel_, {rotation, at}, {static_cast<std::size_t>(-1), 0, 0}};
+    // Vertex snap: onto a rim of a model already there.
+    if (const auto shift = vertexSnapShift({instance})) {
+        file = toFile(at + *shift, s->sceneBlock, std::array<int, 3>{1, 1, 1});
+        instance.transform.translation = catalog::fromFilePosition(file[0], file[1], file[2]) + scene_.blocks[s->sceneBlock].origin;
+    }
+    return std::pair{instance, s->sceneBlock};
 }
 
 void Viewer::selectionToModel(std::uint64_t shapeKey, std::uint32_t modelId) {
@@ -340,7 +346,25 @@ std::optional<std::pair<std::array<std::int32_t, 3>, std::size_t>> Viewer::prefa
     const auto& prefab = prefabs_[*placingPrefab_];
     bool pieces = false;
     for (const auto& o : prefab.objects()) pieces = pieces || isPiece(prefab.modelIdOf(o));
-    const auto file = toFile(s->point, s->sceneBlock, pieces ? std::optional(moveSteps(true)) : std::nullopt);
+    auto file = toFile(s->point, s->sceneBlock, pieces ? std::optional(moveSteps(true)) : std::nullopt);
+    // Vertex snap: the prefab's models onto a rim of a model already there.
+    if (vertexSnap_) {
+        std::vector<scene::ModelInstance> models;
+        const auto& origin = scene_.blocks[s->sceneBlock].origin;
+        for (const auto& o : prefab.objects()) {
+            const auto placed = edit::transformed(o, file, edit::modelYRotationFor(placeTurn_), 0, 0);
+            if (const auto* pm = placed.model()) {
+                models.push_back({prefab.modelIdOf(o), {catalog::rdbModelRotation(pm->xRotation, pm->yRotation, pm->zRotation),
+                                                        catalog::fromFilePosition(placed.x, placed.y, placed.z) + origin}, {}});
+            }
+        }
+        if (const auto shift = vertexSnapShift(models)) {
+            file = {file[0] + static_cast<std::int32_t>(std::lround(shift->x)), file[1] - static_cast<std::int32_t>(std::lround(shift->y)),
+                    file[2] + static_cast<std::int32_t>(std::lround(shift->z))};
+        }
+    } else {
+        snapRim_.reset();
+    }
     return std::pair{file, s->sceneBlock};
 }
 

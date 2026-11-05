@@ -97,3 +97,55 @@ TEST_CASE("project: saves and loads everything") {
     REQUIRE(next);
     CHECK((*next)->name == "NBF00002.RDB");
 }
+
+TEST_CASE("project: an id range numbers blocks, places and models apart from other projects'") {
+    Project p;
+    CHECK(p.mod.idRange == 0);
+    REQUIRE(p.setIdRange(3));
+    auto b = p.addBlock('N', "Hall", std::nullopt, emptyBlock());
+    REQUIRE(b);
+    CHECK((*b)->name == "NBF00748.RDB");   // 3 * 249 + 1
+    CHECK((*b)->savePosition == kFirstBlockSavePosition + 748u * kBlockSaveStride);
+    auto d = p.addDungeon("Far Away");
+    REQUIRE(d);
+    CHECK((*d)->number == 0);
+    CHECK((*d)->exteriorLocationId() == 60000 + 2 * 3 * 148);
+    auto m = p.addModel("Room", "C00", {});
+    REQUIRE(m);
+    CHECK((*m)->id == kFirstCustomModelId + 3u * kModelsPerRange + 1u);
+    // Fixed once numbers are out.
+    CHECK_FALSE(p.setIdRange(4));
+    CHECK_FALSE(p.setIdRange(kIdRanges));
+
+    // Saved and loaded, the range and the counters come back.
+    const auto file = std::filesystem::temp_directory_path() / "de_project_range_test.json";
+    p.mod.folder = "far-away";
+    p.mod.author = "Kay";
+    REQUIRE(p.save(file));
+    auto loaded = Project::load(file);
+    std::filesystem::remove(file);
+    REQUIRE_MESSAGE(loaded, (loaded ? "" : loaded.error().message));
+    CHECK(loaded->mod.idRange == 3);
+    CHECK(loaded->mod.folder == "far-away");
+    CHECK(loaded->mod.author == "Kay");
+    CHECK(loaded->dungeons()[0].exteriorLocationId() == (*d)->exteriorLocationId());
+    auto next = loaded->addBlock('N', "Next", std::nullopt, emptyBlock());
+    REQUIRE(next);
+    CHECK((*next)->name == "NBF00749.RDB");
+
+    // The highest range stays inside every limit.
+    ProjectDungeon last;
+    last.idRange = kIdRanges - 1;
+    last.number = kDungeonsPerRange - 1;
+    CHECK(last.dungeonLocationId() < 65535);
+    CHECK(kIdRanges * kBlocksPerRange <= kMaxBlocks);
+}
+
+TEST_CASE("project: mod folder names") {
+    CHECK_FALSE(modFolderProblem("bunnyfall-dungeons"));
+    CHECK_FALSE(modFolderProblem("crypts2"));
+    CHECK(modFolderProblem(""));
+    CHECK(modFolderProblem("My Mod"));
+    CHECK(modFolderProblem("-lead"));
+    CHECK(modFolderProblem("../escape"));
+}

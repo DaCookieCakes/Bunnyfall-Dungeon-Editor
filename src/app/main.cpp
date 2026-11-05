@@ -9,7 +9,7 @@
 // --check-*) never ask: they fall back to ../DFData/ARENA2 and ../Bunnyfall. With --screenshot the view is drawn once,
 // offscreen, saved and the program exits. --frames N runs the normal loop, panels and all, in a hidden window for N
 // frames and exits: a smoke test of the whole application without showing anything.
-// --mod is the mod folder the project exports to (default: the Bunnyfall checkout's vendor/bunnyfall-dungeons); edited
+// --mod is the mod folder the project exports to (default: the Bunnyfall checkout's vendor/<the project's mod folder>); edited
 // classic blocks are saved in its WorldDataPatches (or --patches). --project is the project file.
 
 #include "app/config.h"
@@ -213,17 +213,19 @@ int main(int argc, char** argv) {
         if (!viewer) return fatal(viewer.error().message);
         auto& v = **viewer;
         v.attach(window, &config);
-        std::filesystem::path mod = o.mod;
-        if (mod.empty() && !de::app::bunnyfallProblem(config.bunnyfall)) mod = config.modFolder();
-        if (mod.empty() && offscreen && !de::app::bunnyfallProblem("../Bunnyfall")) mod = "../Bunnyfall/vendor/bunnyfall-dungeons";
-        if (!mod.empty()) v.setModFolder(std::filesystem::absolute(mod).lexically_normal());
+        // The mod folder is the project's own (Bunnyfall's vendor/<its folder>) unless --mod says otherwise.
+        if (offscreen && de::app::bunnyfallProblem(config.bunnyfall) && !de::app::bunnyfallProblem("../Bunnyfall")) {
+            config.bunnyfall = std::filesystem::absolute("../Bunnyfall").lexically_normal();
+        }
+        if (!o.mod.empty()) v.setModFolder(std::filesystem::absolute(o.mod).lexically_normal());
         if (!o.patches.empty()) v.setPatchFolder(std::filesystem::absolute(o.patches).lexically_normal());
         if (auto r = v.setProjectFile(std::filesystem::absolute(config.project).lexically_normal()); !r) {
             return fatal("project: " + r.error().message);
         }
         if (!offscreen) {
+            const auto mod = v.modFolder();
             std::println("ARENA2: {}", config.arena2.string());
-            std::println("mod folder: {}", mod.empty() ? "(none: set Bunnyfall in File > Paths)" : mod.string());
+            std::println("mod folder: {}", mod ? mod->string() : "(none: set Bunnyfall in File > Paths)");
             std::println("project: {}", config.project.string());
         }
 
