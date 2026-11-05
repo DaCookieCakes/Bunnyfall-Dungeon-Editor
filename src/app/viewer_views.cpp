@@ -4,6 +4,7 @@
 #include "app/viewer.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
@@ -55,7 +56,7 @@ scene::Ray Viewer::rayAt(double x, double y) const {
 }
 
 void Viewer::frameOrthoViews() {
-    if (modelEditor_) {
+    if (modelling()) {
         frameModel();
         return;
     }
@@ -87,63 +88,140 @@ void Viewer::frameOrthoViews() {
 
 void Viewer::drawViewsWindow() {
     for (auto& v : views_) v.shown = false;
+    // The tab shown decides the mode: the dungeon's (Viewports) or the model editor's. Read from last frame's
+    // windows, except while a tab the program chose is coming to the front.
+    if (focusTabFrames_ > 0) {
+        --focusTabFrames_;
+    } else if (modelEditor_) {
+        if (modelTabShown_ && !dungeonTabShown_) setModelling(true);
+        else if (dungeonTabShown_ && !modelTabShown_) setModelling(false);
+    }
+    const auto* viewports = ImGui::FindWindowByName("Viewports");
+    if (focusTabFrames_ > 0 && !focusModelTab_) ImGui::SetNextWindowFocus();
+    dungeonTabShown_ = drawViewsTab("Viewports", false, nullptr);
+    if (modelEditor_) {
+        if (viewports && viewports->DockId) ImGui::SetNextWindowDockID(viewports->DockId, ImGuiCond_FirstUseEver);
+        if (focusTabFrames_ > 0 && focusModelTab_) ImGui::SetNextWindowFocus();
+        bool open = true;
+        modelTabShown_ = drawViewsTab("Model editor", true, &open);
+        if (!open) closeModelEditor();
+    } else {
+        modelTabShown_ = false;
+    }
+}
+
+bool Viewer::drawViewsTab(const char* name, bool model, bool* open) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-    const bool open = ImGui::Begin("Viewports", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const bool shown = ImGui::Begin(name, open, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
-    if (open) {
-        const ImVec2 origin = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
-        if (maximised_) {
-            drawView(*maximised_, origin, avail);
+    if (shown) {
+        if (model == modelling()) {
+            drawViewGrid();
         } else {
-            constexpr float kGap = 2;
-            const ImVec2 cell{std::floor((avail.x - kGap) / 2), std::floor((avail.y - kGap) / 2)};
-            for (std::size_t i = 0; i < views_.size(); ++i) {
-                const float col = float(i % 2), row = (i >= 2 ? 1.0f : 0.0f);
-                drawView(i, add(origin, {col * (cell.x + kGap), row * (cell.y + kGap)}), cell);
+            // Both tabs on screen at once (split apart): only one holds the views. A click here brings them over.
+            ImGui::SetCursorPos({16, 16});
+            ImGui::TextDisabled(model ? "The model editor: click to work on the model here."
+                                      : "The dungeon: click to work on it here (the model waits in its tab).");
+            const ImVec2 lo = ImGui::GetWindowPos(), hi{lo.x + ImGui::GetWindowWidth(), lo.y + ImGui::GetWindowHeight()};
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(lo, hi) && ImGui::IsWindowHovered()) {
+                setModelling(model);
             }
         }
-        // The pointer, in the coordinates of the view it was last over (a grab keeps following it across views).
-        if (!looking_) {
-            const auto& v = views_[pointerView_];
-            mouseX_ = ImGui::GetIO().MousePos.x - v.min.x;
-            mouseY_ = ImGui::GetIO().MousePos.y - v.min.y;
-        }
-        if (modelEditor_) {
-            continueModelDrag();
-            rightPress_.reset();   // the model editor has no menu in the views
-        } else {
-            if (grabbing_) grabTo(mouseX_, mouseY_);
-            continueDrag();
-            updateGhost();
-        }
+    }
+    ImGui::End();
+    return shown;
+}
 
-        // A right-click that neither looked nor panned: the menu for what is under the pointer.
+void Viewer::drawViewGrid() {
+    const ImVec2 origin = ImGui::GetCursorScreenPos(), avail = ImGui::GetContentRegionAvail();
+    if (maximised_) {
+        drawView(*maximised_, origin, avail);
+    } else {
+        constexpr float kGap = 2;
+        const ImVec2 cell{std::floor((avail.x - kGap) / 2), std::floor((avail.y - kGap) / 2)};
+        for (std::size_t i = 0; i < views_.size(); ++i) {
+            const float col = float(i % 2), row = (i >= 2 ? 1.0f : 0.0f);
+            drawView(i, add(origin, {col * (cell.x + kGap), row * (cell.y + kGap)}), cell);
+        }
+    }
+    // The pointer, in the coordinates of the view it was last over (a grab keeps following it across views).
+    if (!looking_) {
+        const auto& v = views_[pointerView_];
+        mouseX_ = ImGui::GetIO().MousePos.x - v.min.x;
+        mouseY_ = ImGui::GetIO().MousePos.y - v.min.y;
+    }
+    if (modelling()) {
+        continueModelDrag();
+        // A right-click that neither looked nor panned: the model's menu for what is under the pointer.
         if (rightPress_ && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
             const auto press = *rightPress_;
             rightPress_.reset();
             if (press.moved < 6 && ImGui::GetTime() - press.time < 0.5) {
                 pointerView_ = press.view;
-                const auto& pv = views_[press.view];
-                ContextMenu menu{std::nullopt, press.at};
-                if (const auto hit = pickAt(press.at.x - pv.min.x, press.at.y - pv.min.y, selectOptions())) {
-                    menu.ref = refOf(hit->kind, hit->index);
-                    if (!isSelected(*menu.ref)) setSelection({*menu.ref});   // like Hammer: right-click selects
+                auto& e = *modelEditor_;
+                ModelEditor::Menu request{pickModelElement(press.view, press.at), std::nullopt, press.at};
+                if (request.element) {
+                    if (!e.isSelected(*request.element)) {   // like Hammer: it selects
+                        e.clearPicked();
+                        e.select(*request.element, false);
+                    }
+                    const auto& m = e.edit.mesh();
+                    switch (e.pick) {
+                        case ModelEditor::Pick::Points: request.at = m.points[*request.element]; break;
+                        case ModelEditor::Pick::Edges: {
+                            const auto edge = e.edgesList()[*request.element];
+                            request.at = (m.points[edge.first] + m.points[edge.second]) * 0.5;
+                            break;
+                        }
+                        case ModelEditor::Pick::Faces: request.at = modelFaceHit(press.view, press.at, *request.element); break;
+                    }
                 }
-                contextRequest_ = menu;
+                e.menuRequest = request;
             }
         }
-        if (contextRequest_) {
-            context_ = contextRequest_;
-            contextRequest_.reset();
-            ImGui::SetNextWindowPos(context_->at);
-            ImGui::OpenPopup("view-menu");
+        auto& e = *modelEditor_;
+        if (e.menuRequest) {
+            e.menu = e.menuRequest;
+            e.menuRequest.reset();
+            ImGui::SetNextWindowPos(e.menu->screen);
+            ImGui::OpenPopup("model-menu");
         }
-        if (ImGui::BeginPopup("view-menu")) {
-            drawViewContextMenu();
+        e.hoverOpening.reset();   // the menu sets it again while its pointer is on a cut
+        if (ImGui::BeginPopup("model-menu")) {
+            drawModelContextMenu();
             ImGui::EndPopup();
         }
+    } else {
+        if (grabbing_) grabTo(mouseX_, mouseY_);
+        continueDrag();
+        updateGhost();
     }
-    ImGui::End();
+
+    // A right-click that neither looked nor panned: the menu for what is under the pointer.
+    if (rightPress_ && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+        const auto press = *rightPress_;
+        rightPress_.reset();
+        if (press.moved < 6 && ImGui::GetTime() - press.time < 0.5) {
+            pointerView_ = press.view;
+            const auto& pv = views_[press.view];
+            ContextMenu menu{std::nullopt, press.at};
+            if (const auto hit = pickAt(press.at.x - pv.min.x, press.at.y - pv.min.y, selectOptions())) {
+                menu.ref = refOf(hit->kind, hit->index);
+                if (!isSelected(*menu.ref)) setSelection({*menu.ref});   // like Hammer: right-click selects
+            }
+            contextRequest_ = menu;
+        }
+    }
+    if (contextRequest_) {
+        context_ = contextRequest_;
+        contextRequest_.reset();
+        ImGui::SetNextWindowPos(context_->at);
+        ImGui::OpenPopup("view-menu");
+    }
+    if (ImGui::BeginPopup("view-menu")) {
+        drawViewContextMenu();
+        ImGui::EndPopup();
+    }
 }
 
 void Viewer::drawView(std::size_t index, ImVec2 min, ImVec2 size) {
@@ -180,7 +258,7 @@ void Viewer::drawView(std::size_t index, ImVec2 min, ImVec2 size) {
         list->AddImage(static_cast<ImTextureID>(v.target.texture()), v.min, add(v.min, v.size), {0, 1}, {1, 0});
     }
     if (v.kind != ViewKind::Perspective) drawOrthoGrid(index);
-    if (modelEditor_) {
+    if (modelling()) {
         const bool overHandle = drawModelOverlay(index);
         modelViewInput(index, overHandle);
         viewInput(index, overHandle);
@@ -236,7 +314,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
     const double mx = io.MousePos.x - v.min.x, my = io.MousePos.y - v.min.y;
     const bool ortho = v.kind != ViewKind::Perspective;
 
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !modelEditor_) {
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !modelling()) {
         if (linkFrom_) finishLink(pickAt(mx, my, selectOptions()));
         else if (grabbing_) endGrab(true);
         else if (placingAnything()) placeAt(mx, my);
@@ -251,7 +329,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
         }
     }
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !linkFrom_ && !grabbing_ && !placingAnything() &&
-        !modelEditor_) {
+        !modelling()) {
         // Like Hammer: a double-click opens the object's properties (it becomes the one Properties shows).
         if (const auto hit = pickAt(mx, my, selectOptions())) {
             const auto ref = refOf(hit->kind, hit->index);
@@ -264,7 +342,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
             openProperties(io.MousePos);
         }
     }
-    const bool modelDragging = modelEditor_ && modelEditor_->drag.kind != ModelEditor::Drag::Kind::None;
+    const bool modelDragging = modelling() && modelEditor_->drag.kind != ModelEditor::Drag::Kind::None;
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && drag_.kind == Drag::Kind::None && !modelDragging) {
         if (linkFrom_) linkFrom_.reset();
         else if (grabbing_) endGrab(false);
@@ -315,7 +393,7 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
 
 void Viewer::renderViews(float pixelsPerPoint) {
     thumbnails_.renderPending(*renderer_);
-    if (modelEditor_) {
+    if (modelling()) {
         // The model alone, drawn as the dungeon is (2D views as wireframe).
         modelChanged();
         for (std::size_t i = 0; i < views_.size(); ++i) {

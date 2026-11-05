@@ -409,6 +409,130 @@ std::vector<std::uint32_t> sliceFaces(Mesh& mesh, const FaceSet& faces, int axis
     return halves;
 }
 
+EdgeSet edgesOf(const Mesh& mesh) {
+    EdgeSet out;
+    for (const auto& f : mesh.faces) {
+        for (std::size_t i = 0; i < f.points.size(); ++i) out.insert(edgeOf(f.points[i], f.points[(i + 1) % f.points.size()]));
+    }
+    return out;
+}
+
+std::vector<std::uint32_t> facesWithEdge(const Mesh& mesh, Edge edge) {
+    std::vector<std::uint32_t> out;
+    for (std::uint32_t fi = 0; fi < mesh.faces.size(); ++fi) {
+        const auto& p = mesh.faces[fi].points;
+        for (std::size_t i = 0; i < p.size(); ++i) {
+            if (edgeOf(p[i], p[(i + 1) % p.size()]) == edge) {
+                out.push_back(fi);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+PointSet pointsOf(const Mesh& mesh, const EdgeSet& edges) {
+    PointSet out;
+    for (const auto& [a, b] : edges) {
+        if (a < mesh.points.size()) out.insert(a);
+        if (b < mesh.points.size()) out.insert(b);
+    }
+    return out;
+}
+
+std::optional<Vec3> outwardOf(const Mesh& mesh, Edge edge) {
+    const auto faces = facesWithEdge(mesh, edge);
+    if (faces.empty()) return std::nullopt;
+    const auto& f = mesh.faces[faces.front()];
+    const Vec3 a = mesh.points[edge.first], b = mesh.points[edge.second];
+    const Vec3 along = normalised(b - a);
+    Vec3 out = normalised(cross(along, mesh.normal(f)));   // square to the edge, in the face's plane
+    if (dot(out, (a + b) * 0.5 - mesh.centre(f)) < 0) out = out * -1;
+    return out;
+}
+
+std::vector<std::uint32_t> extendEdges(Mesh& mesh, const EdgeSet& edges, Vec3 offset) {
+    std::vector<std::uint32_t> made;
+    if (length(offset) == 0) return made;
+    std::map<std::uint32_t, std::uint32_t> moved;   // points edges share move once
+    auto movedOf = [&](std::uint32_t p) {
+        auto [it, fresh] = moved.try_emplace(p, static_cast<std::uint32_t>(mesh.points.size()));
+        if (fresh) mesh.points.push_back(mesh.points[p] + offset);
+        return it->second;
+    };
+    for (const auto& edge : edges) {
+        if (edge.first >= mesh.points.size() || edge.second >= mesh.points.size()) continue;
+        // The way round the bordering face goes along this edge, so the new face meets it the other way round.
+        std::uint32_t a = edge.first, b = edge.second;
+        Vec3 facing{0, 1, 0};
+        if (const auto faces = facesWithEdge(mesh, edge); !faces.empty()) {
+            const auto& p = mesh.faces[faces.front()].points;
+            for (std::size_t i = 0; i < p.size(); ++i) {
+                if (edgeOf(p[i], p[(i + 1) % p.size()]) == edge) {
+                    a = p[i];
+                    b = p[(i + 1) % p.size()];
+                    break;
+                }
+            }
+            facing = mesh.normal(mesh.faces[faces.front()]);
+        }
+        Face f{{b, a, movedOf(a), movedOf(b)}, {}, {}};
+        if (const auto faces = facesWithEdge(mesh, edge); !faces.empty()) {
+            f.texture = mesh.faces[faces.front()].texture;
+            f.uv = mesh.faces[faces.front()].uv;
+        } else if (dot(mesh.normal(f), facing) < 0) {
+            std::ranges::reverse(f.points);
+        }
+        mesh.faces.push_back(std::move(f));
+        made.push_back(static_cast<std::uint32_t>(mesh.faces.size() - 1));
+    }
+    return made;
+}
+
+bool dissolveEdge(Mesh& mesh, Edge edge) {
+    const auto faces = facesWithEdge(mesh, edge);
+    if (faces.size() != 2) return false;
+    const auto& f1 = mesh.faces[faces[0]];
+    const auto& f2 = mesh.faces[faces[1]];
+    if (dot(mesh.normal(f1), mesh.normal(f2)) < 0.999) return false;
+    // Walk the first face from the edge's far end round to its near end, then the second the same way: the shared
+    // edge is left out and the rest joins up.
+    auto walk = [&](const Face& f) {
+        const auto& p = f.points;
+        std::size_t i = 0;
+        while (edgeOf(p[i], p[(i + 1) % p.size()]) != edge) ++i;
+        std::vector<std::uint32_t> out;
+        for (std::size_t k = 1; k <= p.size(); ++k) out.push_back(p[(i + k) % p.size()]);   // the edge's far end round to its near end
+        return out;
+    };
+    auto merged = walk(f1);
+    const auto rest = walk(f2);
+    // f1 gives far end .. near end; f2, running the edge the other way round, gives near end .. far end. Joined
+    // without the repeats, they go round both faces at once.
+    merged.insert(merged.end(), rest.begin() + 1, rest.end());
+    merged.pop_back();   // back at the start
+    Face joined{std::move(merged), f1.texture, f1.uv};
+    const auto keep = std::min(faces[0], faces[1]), drop = std::max(faces[0], faces[1]);
+    mesh.faces[keep] = std::move(joined);
+    mesh.faces.erase(mesh.faces.begin() + drop);
+    tidyFaces(mesh);
+    return true;
+}
+
+std::optional<std::uint32_t> connectEdges(Mesh& mesh, Edge first, Edge second) {
+    if (first == second) return std::nullopt;
+    const auto a = facesWithEdge(mesh, first), b = facesWithEdge(mesh, second);
+    std::optional<std::uint32_t> face;
+    for (const auto f : a) {
+        if (std::ranges::find(b, f) != b.end()) face = f;
+    }
+    if (!face) return std::nullopt;
+    const auto m1 = splitEdge(mesh, first.first, first.second);
+    const auto m2 = splitEdge(mesh, second.first, second.second);
+    if (!m1 || !m2) return std::nullopt;
+    return splitFace(mesh, *face, *m1, *m2);
+}
+
 std::optional<std::uint32_t> weld(Mesh& mesh, const PointSet& points, Vec3 at) {
     if (points.empty() || *points.rbegin() >= mesh.points.size()) return std::nullopt;
     const auto kept = *points.begin();

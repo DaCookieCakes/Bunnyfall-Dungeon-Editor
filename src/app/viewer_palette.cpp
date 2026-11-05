@@ -40,10 +40,7 @@ std::string lowered(std::string_view s) {
 } // namespace
 
 void Viewer::armModel(std::uint32_t id) {
-    if (modelEditor_) {
-        status_ = "Close the model editor to place models in the dungeon.";
-        return;
-    }
+    if (modelling()) setModelling(false);   // placing happens in the dungeon's tab
     if (!edit_) {
         status_ = "Start editing a block first (Properties > Edit this block).";
         return;
@@ -235,7 +232,7 @@ void Viewer::drawCustomModelList() {
             if (armed || open) ImGui::PopStyleColor();
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                 openModelEditor(m.id);
-            } else if (clicked && edit_ && !modelEditor_) {
+            } else if (clicked && edit_) {
                 if (armed) stopPlacing();
                 else armModel(m.id);
             }

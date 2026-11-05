@@ -1018,6 +1018,17 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
         if (ImGui::IsItemHovered() && selection_.size() > 1) ImGui::SetTooltip("Turns the whole selection about its middle");
         ImGui::SameLine();
         ImGui::TextDisabled("%.0f deg", std::fmod(m->yRotation * 360.0 / 2048.0, 360.0));
+        // Tipping and rolling: quarter turns about the world's X (east-west) and Z (north-south) axes.
+        if (ImGui::Button("Tip -90")) turnSelectedAbout(0, -kQuarterTurn);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip +90")) turnSelectedAbout(0, kQuarterTurn);
+        ImGui::SetItemTooltip("About the east-west (X) axis: +90 tips the top northward");
+        ImGui::SameLine();
+        if (ImGui::Button("Roll -90")) turnSelectedAbout(2, -kQuarterTurn);
+        ImGui::SameLine();
+        if (ImGui::Button("Roll +90")) turnSelectedAbout(2, kQuarterTurn);
+        ImGui::SetItemTooltip("About the north-south (Z) axis: +90 rolls east toward up");
+        ImGui::TextDisabled("file rotation x %d  y %d  z %d  (2048 a turn)", m->xRotation, m->yRotation, m->zRotation);
     } else if (auto* f = std::get_if<formats::RdbFlat>(&obj.resource)) {
         if (kind == edit::EntityKind::FixedEnemy) {
             int type = edit::fixedEnemyType(*f);

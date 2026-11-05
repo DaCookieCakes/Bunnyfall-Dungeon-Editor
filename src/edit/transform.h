@@ -24,6 +24,12 @@ struct Moving {
 formats::RdbObject transformed(const formats::RdbObject& start, std::array<std::int32_t, 3> offset, std::int32_t turn,
                                double pivotX, double pivotZ);
 
+/// `start` turned by `turn` file rotation units (2048 a full turn) about the editor axis `axis` (0 X, 1 Y, 2 Z)
+/// through `pivot` (file units, Daggerfall axes). Its position turns about the pivot; a model's own orientation turns
+/// with it (the world turn composed with its rotation, written back as Daggerfall's three angles). Positive turns as
+/// catalog::axisRotation: about Y, clockwise seen from above (as `transformed` turns). Flats and lights only move.
+formats::RdbObject turnedAbout(const formats::RdbObject& start, int axis, std::int32_t turn, std::array<double, 3> pivot);
+
 /// The amount a model's yRotation changes for a clockwise (seen from above) turn of `turn` units.
 std::int32_t modelYRotationFor(std::int32_t turn);
 

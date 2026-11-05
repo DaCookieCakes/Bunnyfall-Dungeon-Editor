@@ -57,8 +57,10 @@ press **Edit** in the Edit panel). Then:
   likewise), **Ctrl+A** takes everything shown. Moving, turning, nudging, duplicating and deleting act on all of the
   edited block's selected objects, each as one undo step.
 - **Handles** on the selection, in every view: drag an arrow to move along X, Y or Z, the square to move freely in the
-  view's plane, or drag a selected object itself. **R** (or the toolbar) switches to the turning ring (3D and Top
-  views), which turns the selection about its middle in steps of the toolbar's turn snap. Right-click or Esc cancels.
+  view's plane, or drag a selected object itself. **R** (or the toolbar) switches to the turning
+  rings, which turn the selection about its middle in steps of the toolbar's turn snap: in 3D one per axis (X red, Y
+  green, Z blue), in Top, Front and Side the one facing the view. Properties also has quarter turns about each axis
+  (Turn, Tip, Roll). Right-click or Esc cancels.
 - **Hiding:** the toolbar's **Show** menu hides kinds (architecture, doors, props, scenery, enemies, treasure, quest
   markers, start/enter, other markers, lights); **H** hides the selection, **I** shows only the selection's block,
   **U** shows everything again. Hidden things cannot be picked or placed on.
@@ -109,12 +111,22 @@ panel says how many dungeons show the change.
 
 **File > New model** (or **New model** in the Models panel's **Custom** tab) starts a piece of your own: a room one
 cell across and two high, like corridor 67000. The views then show the model alone, with its origin (the point a
-block places it by) at the cross of coloured lines. The **Model** panel (where Edit was) holds the tools:
+block places it by) at the cross of coloured lines. It opens in a **Model editor** tab beside **Viewports**: pick
+Viewports to look at the dungeon meanwhile (each tab keeps its own camera; the model waits in its tab until you close
+it with its x or Close). **Right-click** a face, a point or empty space for what you can do there: push out, cut a
+door, arch or window (its outline shows as you point at it), slice here, take or lay a texture, fit, flip, join,
+weld, onto the grid, add a box. The **Model** panel (where Edit was) holds the tools and their numbers:
 
-- **Pick** points (**1**) or faces (**2**; **Tab** switches). Click, Shift+click adds, Ctrl+click toggles, drag on
-  empty space for a box, **Ctrl+A** all. In the 2D views a face edge-on is picked by the dot at its middle.
+- **Pick** points (**1**), edges (**2**) or faces (**3**); **Tab** goes round them. Click, Shift+click adds,
+  Ctrl+click toggles, drag on empty space for a box, **Ctrl+A** all. A box takes edges and faces by their middles; in
+  the 2D views a dot marks each middle, which is also how an edge-on face is picked.
+- **Edges**: **Grow out** adds a face from each edge across the face beside it (more floor, more wall), **Grow
+  up/down** straight up or down, each by the distance under Edit, leaving the new far edges selected to grow again.
+  **J** with two edges of a face cuts it between their middles; **Split edge** puts a point in each middle;
+  **Weld** collapses each edge to a point; **Del** removes an edge by joining the two faces either side (undoing a
+  cut or a slice; only where they lie flat together).
 - **Move**: drag a selected point or face (in 3D across the floor; hold Shift for up and down), or drag an axis arrow.
-  The corner you grab lands on the **grid** (its step is in the panel), or with **snap to points** on any point near
+  The corner you grab lands on the **grid** (its step is in the panel; **[** and **]** make it smaller and bigger), or with **snap to points** on any point near
   the pointer. **Show reference** draws a classic model in blue lines to build to and snap to; none of it is copied.
   Arrows and PgUp/PgDn move by a grid step; Move, Turn and Mirror in the panel take exact values.
 - **Shapes**: a box between two corners, seen from inside (a room) or outside (a solid), with any sides left off, or
@@ -130,8 +142,9 @@ block places it by) at the cross of coloured lines. The **Model** panel (where E
   through a thick wall or into a corridor behind is closed in. **Slice** cuts the selected faces in two along a grid
   line (X, Y or Z =; **here** takes the selection's middle). Both put the new corners into the neighbouring faces'
   edges, so nothing cracks.
-- **Texture**: the six dungeon sets (each dungeon's texture table swaps them, as it does classic walls) or any archive
-  by number. Click a picture to lay it on the selected faces. **Texture alignment**: units per texel (classic: 2),
+- **Texture**: any archive in your ARENA2, from a list with a filter (number or name) and arrows to step through:
+  the six dungeon sets first (each dungeon's texture table swaps them, as it does classic walls), then the ones
+  classic pieces use, most used first, then the rest. Click a picture to lay it on the selected faces. **Texture alignment**: units per texel (classic: 2),
   offset, turn; **Fit** puts one copy across each face, **Classic** lines faces up on the world.
 - The kind (architecture, action door, prop) is the description blocks give it: pieces snap to the classic grid, and
   DOR makes an action door.

@@ -29,6 +29,14 @@ struct IndexedImage {
 /// RGBA8, row 0 at the top. Palette index 0 becomes transparent when `transparentZero` is set (flats), else opaque.
 std::vector<std::uint8_t> toRgba(const IndexedImage& image, const Palette& palette, bool transparentZero);
 
+/// One TEXTURE.nnn file in an ARENA2 folder.
+struct TextureArchiveEntry {
+    int archive = 0;
+    std::string description;   ///< As its header gives it, without the spaces round it.
+};
+/// Every TEXTURE.nnn in the folder (any case), in number order, each read only as far as its header.
+std::vector<TextureArchiveEntry> listTextureArchives(const std::filesystem::path& arena2Dir);
+
 /// A TEXTURE.nnn archive: records, each with one or more frames.
 class TextureArchive {
 public:

@@ -65,6 +65,14 @@ inline Vec3 fromMeshPoint(std::int32_t x, std::int32_t y, std::int32_t z) {
     return {x / kArch3dUnitsPerBlockUnit, -y / kArch3dUnitsPerBlockUnit, z / kArch3dUnitsPerBlockUnit};
 }
 
+/// A turn of `degrees` about one editor axis (0 X, 1 Y, 2 Z), as the model rotation is built from: positive turns
+/// X from Y toward Z, Y from Z toward X (clockwise seen from above), Z from X toward Y.
+Mat3 axisRotation(int axis, double degrees);
+
+/// The file rotation values (x, y, z; 0..2047) whose rdbModelRotation is `rotation`, rounded to whole units. Where X
+/// is a quarter turn up or down (gimbal lock), Y is taken as 0 and Z carries the rest.
+std::array<std::int32_t, 3> rdbRotationOf(const Mat3& rotation);
+
 /// The box around `local` after rotating and moving it.
 Box transformBox(const Box& local, const Mat3& rotation, Vec3 position);
 

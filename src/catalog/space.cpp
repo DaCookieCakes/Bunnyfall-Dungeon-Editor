@@ -1,6 +1,7 @@
 #include "catalog/space.h"
 
 #include <algorithm>
+#include <cmath>
 #include <numbers>
 
 namespace de::catalog {
@@ -32,6 +33,32 @@ double clean(double v) {
 
 Mat3 rdbModelRotation(std::int32_t xRotation, std::int32_t yRotation, std::int32_t zRotation) {
     return rotZ(rotationDegrees(zRotation)) * rotX(rotationDegrees(xRotation)) * rotY(rotationDegrees(yRotation));
+}
+
+Mat3 axisRotation(int axis, double degrees) {
+    return axis == 0 ? rotX(degrees) : axis == 1 ? rotY(degrees) : rotZ(degrees);
+}
+
+std::array<std::int32_t, 3> rdbRotationOf(const Mat3& r) {
+    // rotZ(g) * rotX(a) * rotY(b) is, row-major:
+    //   [cg cb - sg sa sb, -sg ca, cg sb + sg sa cb]
+    //   [sg cb + cg sa sb,  cg ca, sg sb - cg sa cb]
+    //   [-ca sb,            sa,    ca cb           ]
+    const auto& m = r.m;
+    const double a = std::asin(std::clamp(m[7], -1.0, 1.0));
+    double b = 0, g = 0;
+    if (std::abs(std::cos(a)) > 1e-6) {
+        b = std::atan2(-m[6], m[8]);
+        g = std::atan2(-m[1], m[4]);
+    } else {
+        g = std::atan2(m[3], m[0]);   // b = 0: the first column is (cg, sg, 0)
+    }
+    // Editor degrees are the file's negated (rotationDegrees).
+    auto units = [](double radians) {
+        const auto u = static_cast<std::int32_t>(std::lround(-radians * kRotationUnitsPerTurn / (2 * std::numbers::pi)));
+        return ((u % kRotationUnitsPerTurn) + kRotationUnitsPerTurn) % kRotationUnitsPerTurn;
+    };
+    return {units(a), units(b), units(g)};
 }
 
 Box transformBox(const Box& local, const Mat3& rotation, Vec3 position) {

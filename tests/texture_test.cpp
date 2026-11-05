@@ -96,3 +96,17 @@ TEST_CASE("ARENA2: the corridor wall texture decodes at its header's size and is
     std::set<std::uint8_t> colours(img->pixels.begin(), img->pixels.end());
     CHECK(colours.size() > 8);
 }
+
+TEST_CASE("ARENA2: every TEXTURE file is listed with the description its header gives") {
+    DE_REQUIRE_ARENA2(a);
+    const auto all = de::formats::listTextureArchives(a->dir);
+    CHECK(all.size() == 472);
+    CHECK(std::ranges::is_sorted(all, {}, &de::formats::TextureArchiveEntry::archive));
+    const auto it = std::ranges::find(all, 120, &de::formats::TextureArchiveEntry::archive);
+    REQUIRE(it != all.end());
+    const auto whole = de::formats::TextureArchive::load(a->dir, 120);
+    REQUIRE(whole);
+    CHECK(it->description == whole->description());
+    CHECK_FALSE(it->description.empty());
+    MESSAGE("120: " << it->description);
+}

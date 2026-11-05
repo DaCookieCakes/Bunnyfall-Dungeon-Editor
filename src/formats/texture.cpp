@@ -2,7 +2,10 @@
 
 #include "core/file.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <fstream>
 
 namespace de::formats {
 
@@ -56,6 +59,36 @@ std::string TextureArchive::fileName(int archive) {
     return name;
 }
 
+std::vector<TextureArchiveEntry> listTextureArchives(const std::filesystem::path& arena2Dir) {
+    std::vector<TextureArchiveEntry> out;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(arena2Dir, ec)) {
+        const auto name = entry.path().filename().string();
+        if (name.size() != 11 || name[7] != '.') continue;
+        std::string head = name.substr(0, 7);
+        for (auto& c : head) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (head != "TEXTURE" || !std::all_of(name.begin() + 8, name.end(), [](char c) { return c >= '0' && c <= '9'; })) continue;
+        TextureArchiveEntry e;
+        e.archive = std::stoi(name.substr(8));
+        // The header: a record count (2 bytes) then a 24-character description.
+        std::ifstream in(entry.path(), std::ios::binary);
+        char header[26] = {};
+        if (in.read(header, sizeof header)) {
+            e.description.assign(header + 2, 24);
+            const auto end = e.description.find_last_not_of(std::string_view(" \0", 2));
+            e.description.erase(end == std::string::npos ? 0 : end + 1);
+            for (auto& c : e.description) {
+                if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) > 126) c = ' ';
+            }
+            const auto start = e.description.find_first_not_of(' ');
+            e.description.erase(0, start == std::string::npos ? e.description.size() : start);
+        }
+        out.push_back(std::move(e));
+    }
+    std::ranges::sort(out, {}, &TextureArchiveEntry::archive);
+    return out;
+}
+
 Result<TextureArchive> TextureArchive::load(const std::filesystem::path& arena2Dir, int archive) {
     const auto name = fileName(archive);
     auto path = findArena2File(arena2Dir, name);
@@ -77,6 +110,8 @@ Result<TextureArchive> TextureArchive::fromBytes(std::vector<std::uint8_t> bytes
         if (count < 0) return fail("negative record count");
         t.description_ = v.fixedString(2, 24);
         while (!t.description_.empty() && t.description_.back() == ' ') t.description_.pop_back();
+        t.description_.erase(0, t.description_.find_first_not_of(' ') == std::string::npos ? t.description_.size()
+                                                                                         : t.description_.find_first_not_of(' '));
         t.records_.reserve(static_cast<std::size_t>(count));
         for (std::size_t i = 0; i < static_cast<std::size_t>(count); ++i) {
             const auto header = kRecordHeadersAt + i * kRecordHeaderSize;

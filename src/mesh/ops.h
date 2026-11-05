@@ -16,6 +16,32 @@ namespace de::mesh {
 
 using PointSet = std::set<std::uint32_t>;
 using FaceSet = std::set<std::uint32_t>;
+/// An edge by its two points, the smaller index first (the same edge whichever face it is read from).
+using Edge = std::pair<std::uint32_t, std::uint32_t>;
+using EdgeSet = std::set<Edge>;
+inline Edge edgeOf(std::uint32_t a, std::uint32_t b) { return a < b ? Edge{a, b} : Edge{b, a}; }
+
+/// Every edge of the mesh's faces, each once.
+EdgeSet edgesOf(const Mesh& mesh);
+/// The faces that have an edge.
+std::vector<std::uint32_t> facesWithEdge(const Mesh& mesh, Edge edge);
+/// Every point the edges use.
+PointSet pointsOf(const Mesh& mesh, const EdgeSet& edges);
+
+/// New faces grown from edges, each a quad from the edge to the edge moved by `offset`, seen from the same side as
+/// the face the edge borders (when it borders one). Answers the new faces.
+std::vector<std::uint32_t> extendEdges(Mesh& mesh, const EdgeSet& edges, Vec3 offset);
+/// The way to grow an edge out across the face it borders: in that face's plane, square to the edge, away from the
+/// face. Nullopt when the edge borders no face.
+std::optional<Vec3> outwardOf(const Mesh& mesh, Edge edge);
+
+/// The two faces either side of an edge become one (the first's texture kept). False when the edge does not have
+/// exactly two faces, or they face different ways (merging them would bend the face).
+bool dissolveEdge(Mesh& mesh, Edge edge);
+
+/// Cuts a face between the middles of two of its edges (both edges get a new middle point, in every face that has
+/// them). Answers the new half, or nullopt when no face has both edges.
+std::optional<std::uint32_t> connectEdges(Mesh& mesh, Edge first, Edge second);
 
 /// The sides of a box: -X, +X, -Y (bottom), +Y (top), -Z, +Z.
 enum class BoxSide { West, East, Bottom, Top, South, North };

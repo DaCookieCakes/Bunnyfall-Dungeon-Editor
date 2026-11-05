@@ -64,15 +64,21 @@ void Viewer::drawUi() {
                 ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "isolated: %s", scene_.blocks[*isolated_].name.c_str());
                 separator();
             }
-            if (modelEditor_) {
+            if (modelling()) {
                 const auto* model = project_.model(modelEditor_->modelId);
                 ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), "building model %u %s (%s)",
                                    modelEditor_->modelId, model ? model->label.c_str() : "",
-                                   modelEditor_->pick == ModelEditor::Pick::Points ? "points" : "faces");
+                                   modelEditor_->pick == ModelEditor::Pick::Points  ? "points"
+                                   : modelEditor_->pick == ModelEditor::Pick::Edges ? "edges"
+                                                                                    : "faces");
             } else if (edit_) {
                 ImGui::Text("editing %s%s", edit_->name().c_str(), edit_->dirty() ? " *" : "");
             } else {
                 ImGui::TextDisabled("viewing");
+            }
+            if (modelEditor_ && !modelling()) {
+                separator();
+                ImGui::TextDisabled("model %u open in its tab", modelEditor_->modelId);
             }
             if (placingAnything()) {
                 separator();
@@ -104,8 +110,8 @@ void Viewer::drawUi() {
     if (showProperties_) drawInspector();
     if (showViewPanel_) drawViewPanel();
     if (modelEditor_) modelChanged();
-    if (showEdit_ && !modelEditor_) drawEditPanel();
-    if (modelEditor_) drawModelEditorPanel();
+    if (showEdit_ && !modelling()) drawEditPanel();
+    if (modelling()) drawModelEditorPanel();
     if (showProject_) drawProjectPanel();
     drawConfirmations();
     if (config_) drawPathsWindow(window_, *config_, &pathsOpen_);
@@ -129,7 +135,7 @@ void Viewer::drawUi() {
                     {"Right-click (no drag)", "a menu for what is under the pointer: properties, chain, quick setups"},
                     {"Left-drag", "a box selects (Shift adds, Ctrl toggles); on a selected object, moves the selection"},
                     {"Ctrl+A", "select everything shown (in the edited block, when editing)"},
-                    {"Handles", "arrows move along X/Y/Z, the square freely; the ring turns (R switches)"},
+                    {"Handles", "arrows move along X/Y/Z, the square freely; rings turn about X/Y/Z (R switches)"},
                     {"G", "move the selection with the pointer (2D views keep its height or depth)"},
                     {"[ and ]", "turn the model being placed (Shift: by the turn snap)"},
                     {"H / U / I", "hide the selection / show everything / isolate the selection's block"},
@@ -140,12 +146,14 @@ void Viewer::drawUi() {
                     {"L", "trigger arrows: all / the selection's chains / none"},
                     {"Esc", "cancel a move, stop placing, deselect"},
                     {"Model editor", "File > New model, or a model's Edit button (Models > Custom)"},
-                    {"  1 / 2 / Tab", "pick points / faces"},
+                    {"  1 / 2 / 3 / Tab", "pick points / edges / faces"},
                     {"  Drag the selection", "move it (3D: Shift for up and down); corners snap to the grid or a point"},
                     {"  X / Shift+X", "push faces out (a wall into a corridor) / pull them in"},
-                    {"  J", "two points: cut the face between them; three or more: fill a face"},
+                    {"  J", "two points: cut the face between them; three or more: fill a face; two edges: cut between"},
                     {"  N / Del / Ctrl+D", "flip faces / delete / copy"},
                     {"  Arrows, PgUp/PgDn", "move the selection a grid step"},
+                    {"  [ and ]", "a smaller / bigger grid"},
+                    {"  Right-click", "a menu for the face, point or empty space under the pointer"},
                 };
                 for (const auto& [k, what] : rows) {
                     ImGui::TableNextRow();
@@ -177,7 +185,7 @@ void Viewer::drawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
-        if (modelEditor_) {   // the model's history, not the block's
+        if (modelling()) {   // the model's history, not the block's
             auto& history = modelEditor_->edit;
             if (ImGui::MenuItem("Undo", "Ctrl+Z", false, history.canUndo()) && history.undo()) modelChanged();
             if (ImGui::MenuItem("Redo", "Ctrl+Y", false, history.canRedo()) && history.redo()) modelChanged();
@@ -237,7 +245,7 @@ void Viewer::drawToolbar() {
             gizmoMode_ = GizmoMode::Move;
         }
         ImGui::SameLine();
-        if (toggle("Turn", turnMode, "Turn handle in the 3D and Top views: drag the ring (R)")) gizmoMode_ = GizmoMode::Turn;
+        if (toggle("Turn", turnMode, "Turn handles: rings about X (red), Y (green) and Z (blue) in 3D; in Top, Front and Side the one facing it (R)")) gizmoMode_ = GizmoMode::Turn;
         ImGui::SameLine();
         {
             const int turns[] = {1, 64, 128, 256, 512};
@@ -319,6 +327,7 @@ void Viewer::buildDefaultLayout(unsigned dockspace) {
     ImGui::DockBuilderDockWindow("Model", rightBottom);
     ImGui::DockBuilderDockWindow("Project", bottom);
     ImGui::DockBuilderDockWindow("Viewports", centre);
+    ImGui::DockBuilderDockWindow("Model editor", centre);
     ImGui::DockBuilderFinish(dockspace);
 }
 

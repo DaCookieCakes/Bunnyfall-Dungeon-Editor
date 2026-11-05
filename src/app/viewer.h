@@ -167,6 +167,10 @@ private:
     void beginTransform();
     void applyTransform(std::array<std::int32_t, 3> offset, std::int32_t turn);
     void endTransform(bool keep);
+    /// The snapshot turned `turn` file units about an editor axis (0 X, 1 Y, 2 Z) through the turning point.
+    void applyTurn(int axis, std::int32_t turn);
+    /// The selection turned about an axis through its middle, as one undo step.
+    void turnSelectedAbout(int axis, std::int32_t turn);
     /// Where a world point shows in a view (screen points), if in front of it; and block units per point there.
     [[nodiscard]] std::optional<ImVec2> toScreen(std::size_t view, catalog::Vec3 world) const;
     [[nodiscard]] double unitsPerPoint(std::size_t view, catalog::Vec3 at) const;
@@ -328,12 +332,50 @@ private:
         std::uint32_t modelId;
         mesh::MeshEdit edit;
         std::uint64_t syncedRevision = ~std::uint64_t{0};   // the revision the caches and the project hold
-        enum class Pick { Points, Faces } pick = Pick::Faces;
+        enum class Pick { Points, Edges, Faces } pick = Pick::Faces;
         mesh::PointSet points;   // the selection, by kind
+        mesh::EdgeSet edges;
         mesh::FaceSet faces;
+        // The mesh's edges in a list, for picking by number (rebuilt when the mesh changes).
+        mutable std::vector<mesh::Edge> edgeList;
+        mutable std::uint64_t edgeListRevision = ~std::uint64_t{0};
+        [[nodiscard]] const std::vector<mesh::Edge>& edgesList() const {
+            if (edgeListRevision != edit.revision()) {
+                const auto all = mesh::edgesOf(edit.mesh());
+                edgeList.assign(all.begin(), all.end());
+                edgeListRevision = edit.revision();
+            }
+            return edgeList;
+        }
+        [[nodiscard]] std::size_t selectedCount() const {
+            return pick == Pick::Points ? points.size() : pick == Pick::Edges ? edges.size() : faces.size();
+        }
+        /// Is element `i` (a point, an edge in edgesList, or a face, by the pick kind) selected?
+        [[nodiscard]] bool isSelected(std::uint32_t i) const {
+            if (pick == Pick::Points) return points.contains(i);
+            if (pick == Pick::Faces) return faces.contains(i);
+            const auto& list = edgesList();
+            return i < list.size() && edges.contains(list[i]);
+        }
+        /// Selects element `i` (or with `toggle`, flips it).
+        void select(std::uint32_t i, bool toggle) {
+            auto flip = [&](auto& set, auto key) {
+                if (toggle && set.contains(key)) set.erase(key);
+                else set.insert(key);
+            };
+            if (pick == Pick::Points) flip(points, i);
+            else if (pick == Pick::Faces) flip(faces, i);
+            else if (i < edgesList().size()) flip(edges, edgesList()[i]);
+        }
+        void clearPicked() {
+            if (pick == Pick::Points) points.clear();
+            else if (pick == Pick::Edges) edges.clear();
+            else faces.clear();
+        }
         std::optional<std::uint32_t> reference;   // a classic model drawn as lines, to trace and snap to
         scene::Scene drawn;                       // what the views draw: the model alone at the origin
-        render::Camera savedCamera;               // the dungeon's views, put back on closing
+        bool active = true;                       // its tab is the one shown: the views and keys are the model's
+        render::Camera savedCamera;               // the other tab's views, swapped in when it is shown
         std::array<std::pair<catalog::Vec3, double>, 4> savedViews{};
         // A drag in a view: a box, the selection moved in the view's plane, or along one axis.
         struct Drag {
@@ -362,11 +404,31 @@ private:
         bool showCuts = false;       // the Cuts section is open: the opening is drawn on the selected faces
         int sliceAxis = 1;           // 0 X, 1 Y, 2 Z
         double sliceAt = 64;
+        // The right-click menu: what it was opened on, and where (the point on the face, for "slice here").
+        struct Menu {
+            std::optional<std::uint32_t> element;
+            std::optional<catalog::Vec3> at;
+            ImVec2 screen{};
+        };
+        std::optional<Menu> menuRequest, menu;
+        std::optional<mesh::Opening> hoverOpening;   // a cut the menu's pointer is on, drawn on the faces
         mesh::FaceTexture brush{120, 0};
         int browseArchive = 120;
         char referenceText[12] = "";
     };
     std::optional<ModelEditor> modelEditor_;
+    /// The model editor's tab is the one shown (the views, keys and panels are the model's).
+    [[nodiscard]] bool modelling() const { return modelEditor_ && modelEditor_->active; }
+    /// Shows the model editor's tab or the dungeon's, each with its own camera and framing.
+    void setModelling(bool on);
+    // Which views tab each window showed last frame (the one shown decides the mode), and a tab asked to come to the
+    // front for a few frames (a tab chosen by the program, not by a click).
+    bool dungeonTabShown_ = true, modelTabShown_ = false;
+    int focusTabFrames_ = 0;
+    bool focusModelTab_ = false;
+    /// One views window: the four views when it is the shown mode's, else a note and a click to switch.
+    bool drawViewsTab(const char* name, bool model, bool* open);
+    void drawViewGrid();
     /// Every custom model of the project into the catalog and the model cache (after loading a project).
     void registerCustomModels();
     /// One custom model's catalog entry, drawn mesh and thumbnail, from the project's copy.
@@ -382,6 +444,14 @@ private:
     /// The Models panel's Custom tab: the project's models, a New button, edit and delete.
     void drawCustomModelList();
     void drawModelTextures();
+    /// The texture archive picker's lists, read on first use: every TEXTURE file, and how many classic dungeon
+    /// pieces use each archive on some face.
+    void loadTextureArchiveLists();
+    std::vector<formats::TextureArchiveEntry> textureArchives_;
+    std::map<int, std::size_t> classicTextureUses_;
+    char textureFilter_[32] = "";
+    /// The grid step one size smaller (-1) or bigger (+1).
+    void stepModelGrid(int direction);
     void drawModelUv();
     /// The overlay in a view (edges, points, the selection, the reference, the handles); true while the pointer is on
     /// a handle.
@@ -407,6 +477,10 @@ private:
     void modelFlip();
     void modelJoin();
     void modelSplitEdge();
+    /// The selected edges: a new point in each one's middle.
+    void modelSplitEdges();
+    /// New faces grown from the selected edges, out across the face beside each (or up or down: `vertical` +1, -1).
+    void modelExtendEdges(int vertical);
     void modelWeld();
     void modelMove(catalog::Vec3 offset);
     void modelTurn(double degrees);
@@ -416,6 +490,12 @@ private:
     void modelAddBox();
     void modelAddStairs();
     void modelCutOpening();
+    /// The right-click menu in a view, for the point or face it was opened on (or empty space).
+    void drawModelContextMenu();
+    /// Where the pointer's ray meets a face, if it does.
+    [[nodiscard]] std::optional<catalog::Vec3> modelFaceHit(std::size_t view, ImVec2 at, std::uint32_t face) const;
+    void modelSnapToGrid();
+    void modelSelectByTexture(mesh::FaceTexture texture);
     void modelSlice();
 
     // ---- the project (viewer_project.cpp) ----
@@ -533,7 +613,7 @@ private:
         bool add = false, toggle = false;   // Shift, Ctrl at the press
     } drag_;
     std::vector<edit::Moving> moving_;                      // the snapshot a transform works from
-    double pivotX_ = 0, pivotZ_ = 0;                        // its turning point, file units
+    double pivotX_ = 0, pivotY_ = 0, pivotZ_ = 0;           // its turning point, file units
     std::size_t movingBlock_ = 0;                           // the scene block it is measured in
     double selectedDistance_ = 0;
     std::string status_;

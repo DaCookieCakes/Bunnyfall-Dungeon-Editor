@@ -278,15 +278,17 @@ void Viewer::beginTransform() {
     movingBlock_ = p && editing(*p) ? p->block : editBlock_;
     // The primary first: a grab moves it to the pointer and the rest keep their places around it.
     if (const auto ps = selectedSlot()) moving_.push_back({*ps, *edit_->object(*ps)});
-    double x = 0, z = 0;
+    double x = 0, y = 0, z = 0;
     for (const auto& s : slots) {
         if (moving_.empty() || moving_.front().slot != s) moving_.push_back({s, *edit_->object(s)});
     }
     for (const auto& m : moving_) {
         x += m.start.x;
+        y += m.start.y;
         z += m.start.z;
     }
     pivotX_ = x / double(moving_.size());
+    pivotY_ = y / double(moving_.size());
     pivotZ_ = z / double(moving_.size());
     edit_->beginGesture();
 }
@@ -295,6 +297,19 @@ void Viewer::applyTransform(std::array<std::int32_t, 3> offset, std::int32_t tur
     if (moving_.empty()) return;
     for (const auto& m : moving_) edit_->replace(m.slot, edit::transformed(m.start, offset, turn, pivotX_, pivotZ_));
     editChanged();
+}
+
+void Viewer::applyTurn(int axis, std::int32_t turn) {
+    if (moving_.empty()) return;
+    for (const auto& m : moving_) edit_->replace(m.slot, edit::turnedAbout(m.start, axis, turn, {pivotX_, pivotY_, pivotZ_}));
+    editChanged();
+}
+
+void Viewer::turnSelectedAbout(int axis, std::int32_t turn) {
+    if (!edit_ || selectedSlots().empty()) return;
+    beginTransform();
+    applyTurn(axis, turn);
+    endTransform(true);
 }
 
 void Viewer::endTransform(bool keep) {
@@ -331,12 +346,25 @@ double Viewer::unitsPerPoint(std::size_t view, catalog::Vec3 at) const {
 namespace {
 
 /// The yaw (0 north, toward +X positive) of where a ray meets the level plane through `centre`.
-std::optional<double> yawOnPlane(const scene::Ray& ray, catalog::Vec3 centre) {
-    if (std::abs(ray.direction.y) < 1e-3) return std::nullopt;
-    const double t = (centre.y - ray.origin.y) / ray.direction.y;
-    const double x = ray.origin.x + ray.direction.x * t - centre.x, z = ray.origin.z + ray.direction.z * t - centre.z;
-    if (x * x + z * z < 1e-6) return std::nullopt;
-    return std::atan2(x, z);
+/// The two directions across the plane a turn about `axis` happens in, `u` turning toward `v` for a positive turn
+/// (catalog::axisRotation): X turns Y toward Z, Y turns Z toward X, Z turns X toward Y.
+std::pair<catalog::Vec3, catalog::Vec3> ringBasis(int axis) {
+    const catalog::Vec3 x{1, 0, 0}, y{0, 1, 0}, z{0, 0, 1};
+    return axis == 0 ? std::pair{y, z} : axis == 1 ? std::pair{z, x} : std::pair{x, y};
+}
+
+/// Where the ray meets the ring's plane, as an angle round the centre (0 along u, growing toward v).
+std::optional<double> angleOnRing(const scene::Ray& ray, catalog::Vec3 centre, int axis) {
+    const auto [u, v] = ringBasis(axis);
+    const catalog::Vec3 n{axis == 0 ? 1.0 : 0.0, axis == 1 ? 1.0 : 0.0, axis == 2 ? 1.0 : 0.0};
+    const double denom = ray.direction.x * n.x + ray.direction.y * n.y + ray.direction.z * n.z;
+    if (std::abs(denom) < 1e-3) return std::nullopt;
+    const double t = ((centre.x - ray.origin.x) * n.x + (centre.y - ray.origin.y) * n.y + (centre.z - ray.origin.z) * n.z) / denom;
+    const catalog::Vec3 h{ray.origin.x + ray.direction.x * t - centre.x, ray.origin.y + ray.direction.y * t - centre.y,
+                          ray.origin.z + ray.direction.z * t - centre.z};
+    const double a = h.x * u.x + h.y * u.y + h.z * u.z, b = h.x * v.x + h.y * v.y + h.z * v.z;
+    if (a * a + b * b < 1e-6) return std::nullopt;
+    return std::atan2(b, a);
 }
 
 } // namespace
@@ -402,33 +430,60 @@ bool Viewer::drawGizmo(std::size_t index) {
             }
             beginTransform();
         }
-    } else if (v.kind == ViewKind::Perspective || v.kind == ViewKind::Top) {
-        // The turning ring, level about the selection's middle.
+    } else {
+        // Turning rings about the selection's middle: all three in 3D, and in each 2D view the one that faces it
+        // (Top turns about Y, Front about Z, Side about X).
+        std::vector<int> axes;
+        switch (v.kind) {
+            case ViewKind::Perspective: axes = {0, 1, 2}; break;
+            case ViewKind::Top: axes = {1}; break;
+            case ViewKind::Front: axes = {2}; break;
+            case ViewKind::Side: axes = {0}; break;
+        }
         constexpr int kSegments = 48;
-        std::vector<ImVec2> ring;
         const double R = kRing * upp;
-        for (int i = 0; i <= kSegments; ++i) {
-            const double t = i * 2 * std::numbers::pi / kSegments;
-            if (const auto p = toScreen(index, {centre->x + std::sin(t) * R, centre->y, centre->z + std::cos(t) * R})) {
-                ring.push_back(*p);
+        int hotAxis = -1;
+        float hotDistance = kGrabRadius;
+        std::array<std::vector<ImVec2>, 3> rings;
+        for (const int a : axes) {
+            const auto [u, w] = ringBasis(a);
+            for (int i = 0; i <= kSegments; ++i) {
+                const double t = i * 2 * std::numbers::pi / kSegments, cu = std::cos(t) * R, sw = std::sin(t) * R;
+                if (const auto p = toScreen(index, {centre->x + u.x * cu + w.x * sw, centre->y + u.y * cu + w.y * sw,
+                                                    centre->z + u.z * cu + w.z * sw})) {
+                    rings[static_cast<std::size_t>(a)].push_back(*p);
+                }
+            }
+            const auto& ring = rings[static_cast<std::size_t>(a)];
+            for (std::size_t i = 1; i < ring.size() && idle; ++i) {
+                const float d = distanceToSegment(mouse, ring[i - 1], ring[i]);
+                if (d < hotDistance) {
+                    hotDistance = d;
+                    hotAxis = a;
+                }
             }
         }
-        float nearest = 1e9f;
-        for (std::size_t i = 1; i < ring.size(); ++i) nearest = std::min(nearest, distanceToSegment(mouse, ring[i - 1], ring[i]));
-        const bool active = drag_.kind == Drag::Kind::Turn && drag_.view == index;
-        hot = idle && nearest < kGrabRadius;
-        if (ring.size() > 1) list->AddPolyline(ring.data(), int(ring.size()), (hot || active) ? kHot : kAxisColours[1], 0, hot ? 3.0f : 2.0f);
+        for (const int a : axes) {
+            const auto& ring = rings[static_cast<std::size_t>(a)];
+            const bool active = drag_.kind == Drag::Kind::Turn && drag_.view == index && drag_.axis == a;
+            if (ring.size() > 1) {
+                list->AddPolyline(ring.data(), int(ring.size()), (hotAxis == a || active) ? kHot : kAxisColours[a], 0,
+                                  hotAxis == a ? 3.0f : 2.0f);
+            }
+        }
         list->AddCircleFilled(*c, 3, IM_COL32(230, 230, 230, 200));
+        hot = hotAxis >= 0;
         if (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             const auto ray = cameraOf(index).rayThrough(mouse.x - v.min.x, mouse.y - v.min.y, v.size.x, v.size.y);
-            if (const auto yaw = yawOnPlane(ray, *centre)) {
+            if (const auto angle = angleOnRing(ray, *centre, hotAxis)) {
                 drag_ = {};
                 drag_.kind = Drag::Kind::Turn;
                 drag_.view = index;
+                drag_.axis = hotAxis;
                 drag_.press = mouse;
                 drag_.centre = *centre;
-                drag_.startYaw = *yaw;
-                drag_.lastYaw = *yaw;
+                drag_.startYaw = *angle;
+                drag_.lastYaw = *angle;
                 beginTransform();
             }
         }
@@ -518,21 +573,21 @@ void Viewer::continueDrag() {
         }
         case Drag::Kind::Turn: {
             const auto ray = cameraOf(drag_.view).rayThrough(mouse.x - v.min.x, mouse.y - v.min.y, v.size.x, v.size.y);
-            if (const auto yaw = yawOnPlane(ray, drag_.centre)) {
+            if (const auto angle = angleOnRing(ray, drag_.centre, drag_.axis)) {
                 // Unwrapped, so turning past half a turn keeps going.
-                double step = *yaw - drag_.lastYaw;
+                double step = *angle - drag_.lastYaw;
                 while (step > std::numbers::pi) step -= 2 * std::numbers::pi;
                 while (step < -std::numbers::pi) step += 2 * std::numbers::pi;
                 drag_.turned += step;
-                drag_.lastYaw = *yaw;
+                drag_.lastYaw = *angle;
             }
             const auto units = snapped(drag_.turned * catalog::kRotationUnitsPerTurn / (2 * std::numbers::pi),
                                        turnStep(selectionHasPieces()));
             if (units != drag_.lastTurn) {
-                applyTransform({0, 0, 0}, units);
+                applyTurn(drag_.axis, units);
                 drag_.lastTurn = units;
             }
-            status_ = std::format("Turning {:.1f} degrees", units * 360.0 / catalog::kRotationUnitsPerTurn);
+            status_ = std::format("Turning {:.1f} degrees about {}", units * 360.0 / catalog::kRotationUnitsPerTurn, "XYZ"[drag_.axis]);
             break;
         }
         case Drag::Kind::None: break;

@@ -545,6 +545,13 @@ Run before every export. Errors block export; warnings don't.
    it, clipped from the face so any flat face works; an optional reveal lines the hole behind the face) and
    `sliceFaces` (a grid-line knife). New corners go into every edge they lie on (no T-junction cracks); faces with
    points along an edge are ear-clipped, so no triangle has zero area.
+   *UI pass (2026-11-04):* the model editor is its own views tab beside Viewports (each keeps its camera; the tab
+   shown decides the mode), with a right-click menu on faces, points and empty space. In the dungeon, the turn handle
+   has a ring per axis (`edit::turnedAbout`: a world turn composed with the model's rotation and written back as
+   Daggerfall's three angles, `catalog::rdbRotationOf`), and Properties has Tip and Roll quarter turns.
+   *Edges (2026-11-04):* a third pick kind (1 points, 2 edges, 3 faces): `edgesOf`, `extendEdges` (grow a face from
+   an edge, wound to match the face beside it), `outwardOf`, `dissolveEdge` (two coplanar faces into one),
+   `connectEdges` (cut a face between two edges' middles).
    *Stage 2 (next):* the designer's own texture images (PNG into stand-in archives, `addVendorTextures`).
 9. Later: custom enemies (§7.2), the Bunnyfall runtime module (§5.3).
 

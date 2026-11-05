@@ -80,7 +80,7 @@ std::optional<std::size_t> Viewer::findDungeon(const std::string& key) const {
 }
 
 void Viewer::setScene(scene::Scene scene) {
-    closeModelEditor();
+    setModelling(false);   // the dungeon's tab shows the new scene; a model being built waits in its own
     endEdit();
     scene_ = std::move(scene);
     ++sceneStamp_;
@@ -209,7 +209,7 @@ void Viewer::handleEvent(const SDL_Event& event) {
     switch (event.type) {
         case SDL_EVENT_KEY_DOWN:
             if (ImGui::GetIO().WantCaptureKeyboard) break;
-            if (modelEditor_) handleModelKey(event.key);
+            if (modelling()) handleModelKey(event.key);
             else handleEditKey(event.key);
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -261,7 +261,7 @@ std::vector<std::string> Viewer::problems() const {
 }
 
 void Viewer::drawPerspective(int pixelWidth, int pixelHeight) {
-    if (modelEditor_) {
+    if (modelling()) {
         modelChanged();
         renderer_->draw(modelEditor_->drawn, camera_, pixelWidth, pixelHeight, drawOptions_, {});
         return;

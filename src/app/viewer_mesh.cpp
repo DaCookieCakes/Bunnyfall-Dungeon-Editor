@@ -14,7 +14,9 @@
 #include <cmath>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <numbers>
+#include <set>
 
 namespace de::app {
 
@@ -102,9 +104,46 @@ void Viewer::newCustomModel() {
     status_ = std::format("New model {}: a room one cell across and two high to start from.", id);
 }
 
+void Viewer::setModelling(bool on) {
+    if (!modelEditor_ || modelEditor_->active == on) return;
+    auto& e = *modelEditor_;
+    if (on) {   // leave the dungeon's drags behind
+        if (grabbing_) endGrab(false);
+        if (!moving_.empty()) endTransform(false);
+        stopPlacing();
+        drag_ = {};
+        linkFrom_.reset();
+        preview_.reset();
+    } else {
+        if (e.edit.inGesture()) e.edit.cancelGesture();
+        e.drag = {};
+        modelChanged();
+    }
+    // Each tab keeps its own camera and framing.
+    const auto camera = camera_;
+    std::array<std::pair<Vec3, double>, 4> views{};
+    for (std::size_t i = 0; i < views_.size(); ++i) views[i] = {views_[i].centre, views_[i].halfHeight};
+    camera_ = e.savedCamera;
+    for (std::size_t i = 0; i < views_.size(); ++i) {
+        views_[i].centre = e.savedViews[i].first;
+        views_[i].halfHeight = e.savedViews[i].second;
+    }
+    e.savedCamera = camera;
+    e.savedViews = views;
+    e.active = on;
+    rightPress_.reset();
+    focusModelTab_ = on;
+    focusTabFrames_ = 3;
+    if (!on) ++sceneStamp_;   // the model's size may have changed: link arrows measure from it
+}
+
 void Viewer::openModelEditor(std::uint32_t id) {
     const auto* model = project_.model(id);
     if (!model) return;
+    if (modelEditor_ && modelEditor_->modelId == id) {
+        setModelling(true);
+        return;
+    }
     if (modelEditor_) closeModelEditor();
     if (grabbing_) endGrab(false);
     if (!moving_.empty()) endTransform(false);
@@ -112,6 +151,8 @@ void Viewer::openModelEditor(std::uint32_t id) {
     drag_ = {};
     linkFrom_.reset();
     preview_.reset();
+    focusModelTab_ = true;
+    focusTabFrames_ = 3;
     ModelEditor e(id, model->mesh);
     e.syncedRevision = e.edit.revision();
     e.savedCamera = camera_;
@@ -126,12 +167,16 @@ void Viewer::closeModelEditor() {
     if (!modelEditor_) return;
     modelChanged();
     if (modelEditor_->edit.inGesture()) modelEditor_->edit.endGesture();
-    camera_ = modelEditor_->savedCamera;
-    for (std::size_t i = 0; i < views_.size(); ++i) {
-        views_[i].centre = modelEditor_->savedViews[i].first;
-        views_[i].halfHeight = modelEditor_->savedViews[i].second;
+    if (modelEditor_->active) {   // the dungeon's views back
+        camera_ = modelEditor_->savedCamera;
+        for (std::size_t i = 0; i < views_.size(); ++i) {
+            views_[i].centre = modelEditor_->savedViews[i].first;
+            views_[i].halfHeight = modelEditor_->savedViews[i].second;
+        }
     }
     modelEditor_.reset();
+    focusModelTab_ = false;
+    focusTabFrames_ = 3;
     ++sceneStamp_;   // the model's size may have changed: link arrows measure from it
 }
 
@@ -143,6 +188,10 @@ void Viewer::modelChanged() {
     const auto& m = e.edit.mesh();
     std::erase_if(e.points, [&](std::uint32_t p) { return p >= m.points.size(); });
     std::erase_if(e.faces, [&](std::uint32_t f) { return f >= m.faces.size(); });
+    if (!e.edges.empty()) {   // only edges some face still has
+        const auto all = mesh::edgesOf(m);
+        std::erase_if(e.edges, [&](const mesh::Edge& edge) { return !all.contains(edge); });
+    }
     if (auto* model = editedModel()) model->mesh = m;
     markProjectChanged();
     issuesStale_ = true;
@@ -154,7 +203,12 @@ void Viewer::modelChanged() {
 mesh::PointSet Viewer::modelMovingPoints() const {
     if (!modelEditor_) return {};
     const auto& e = *modelEditor_;
-    return e.pick == ModelEditor::Pick::Points ? e.points : mesh::pointsOf(e.edit.mesh(), e.faces);
+    switch (e.pick) {
+        case ModelEditor::Pick::Points: return e.points;
+        case ModelEditor::Pick::Edges: return mesh::pointsOf(e.edit.mesh(), e.edges);
+        case ModelEditor::Pick::Faces: break;
+    }
+    return mesh::pointsOf(e.edit.mesh(), e.faces);
 }
 
 std::optional<Vec3> Viewer::modelSelectionCentre() const {
@@ -191,6 +245,22 @@ std::optional<std::uint32_t> Viewer::pickModelElement(std::size_t view, ImVec2 a
     if (e.pick == ModelEditor::Pick::Points) {
         return nearest(static_cast<std::uint32_t>(m.points.size()), [&](std::uint32_t i) { return m.points[i]; });
     }
+    if (e.pick == ModelEditor::Pick::Edges) {
+        // The edge passing nearest the pointer on screen.
+        const auto& list = e.edgesList();
+        std::optional<std::uint32_t> best;
+        float bestDistance = kPickRadius;
+        for (std::uint32_t i = 0; i < list.size(); ++i) {
+            const auto a = toScreen(view, m.points[list[i].first]), b = toScreen(view, m.points[list[i].second]);
+            if (!a || !b) continue;
+            const float d = segmentDistance(at, *a, *b);
+            if (d <= bestDistance) {
+                bestDistance = d;
+                best = i;
+            }
+        }
+        return best;
+    }
     const auto centre = [&](std::uint32_t i) { return m.centre(m.faces[i]); };
     const bool perspective = v.kind == ViewKind::Perspective;
     if (!perspective) {
@@ -217,11 +287,8 @@ std::optional<std::uint32_t> Viewer::pickModelElement(std::size_t view, ImVec2 a
 
 void Viewer::clickModelSelect(std::optional<std::uint32_t> hit, bool add, bool toggle) {
     auto& e = *modelEditor_;
-    auto& set = e.pick == ModelEditor::Pick::Points ? e.points : e.faces;
-    if (!add && !toggle) set.clear();
-    if (!hit) return;
-    if (toggle && set.contains(*hit)) set.erase(*hit);
-    else set.insert(*hit);
+    if (!add && !toggle) e.clearPicked();
+    if (hit) e.select(*hit, toggle);
 }
 
 void Viewer::boxModelSelect(std::size_t view, ImVec2 a, ImVec2 b, bool add, bool toggle) {
@@ -232,14 +299,27 @@ void Viewer::boxModelSelect(std::size_t view, ImVec2 a, ImVec2 b, bool add, bool
         const auto s = toScreen(view, p);
         return s && s->x >= lo.x && s->x <= hi.x && s->y >= lo.y && s->y <= hi.y;
     };
-    const bool points = e.pick == ModelEditor::Pick::Points;
-    auto& set = points ? e.points : e.faces;
-    if (!add && !toggle) set.clear();
-    const auto count = static_cast<std::uint32_t>(points ? m.points.size() : m.faces.size());
+    if (!add && !toggle) e.clearPicked();
+    // Points by where they are, edges and faces by their middles.
+    const auto& edges = e.edgesList();
+    std::uint32_t count = 0;
+    std::function<Vec3(std::uint32_t)> where;
+    switch (e.pick) {
+        case ModelEditor::Pick::Points:
+            count = static_cast<std::uint32_t>(m.points.size());
+            where = [&](std::uint32_t i) { return m.points[i]; };
+            break;
+        case ModelEditor::Pick::Edges:
+            count = static_cast<std::uint32_t>(edges.size());
+            where = [&](std::uint32_t i) { return (m.points[edges[i].first] + m.points[edges[i].second]) * 0.5; };
+            break;
+        case ModelEditor::Pick::Faces:
+            count = static_cast<std::uint32_t>(m.faces.size());
+            where = [&](std::uint32_t i) { return m.centre(m.faces[i]); };
+            break;
+    }
     for (std::uint32_t i = 0; i < count; ++i) {
-        if (!inside(points ? m.points[i] : m.centre(m.faces[i]))) continue;
-        if (toggle && set.contains(i)) set.erase(i);
-        else set.insert(i);
+        if (inside(where(i))) e.select(i, toggle);
     }
 }
 
@@ -397,9 +477,14 @@ void Viewer::continueModelDrag() {
             break;
         }
         case ModelEditor::Drag::Kind::Box: {
+            // ImGui draws a rectangle only from its top-left corner: a box dragged up or left is put in order first.
+            const ImVec2 lo{std::min(d.press.x, io.MousePos.x), std::min(d.press.y, io.MousePos.y)};
+            const ImVec2 hi{std::max(d.press.x, io.MousePos.x), std::max(d.press.y, io.MousePos.y)};
             auto* list = ImGui::GetForegroundDrawList();
-            list->AddRectFilled(d.press, io.MousePos, IM_COL32(255, 170, 40, 30));
-            list->AddRect(d.press, io.MousePos, kSelectedColour);
+            list->PushClipRect(v.min, {v.min.x + v.size.x, v.min.y + v.size.y}, true);
+            list->AddRectFilled(lo, hi, IM_COL32(255, 170, 40, 30));
+            list->AddRect(lo, hi, kSelectedColour);
+            list->PopClipRect();
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                 boxModelSelect(d.view, d.press, io.MousePos, d.add, d.toggle);
                 d = {};
@@ -425,8 +510,7 @@ void Viewer::modelViewInput(std::size_t view, bool overHandle) {
     e.drag.add = io.KeyShift;
     e.drag.toggle = io.KeyCtrl;
     const auto hit = pickModelElement(view, io.MousePos);
-    const auto& set = e.pick == ModelEditor::Pick::Points ? e.points : e.faces;
-    e.drag.onSelection = hit && set.contains(*hit) && !io.KeyCtrl;
+    e.drag.onSelection = hit && e.isSelected(*hit) && !io.KeyCtrl;
 }
 
 // ---- drawing in the views ----
@@ -481,9 +565,10 @@ bool Viewer::drawModelOverlay(std::size_t view) {
         line(toScreen(view, c), toScreen(view, c + m.normal(f) * reach), kSelectedColour, 2);
     }
     // The opening the Cuts section would make, on each selected face.
-    if (e.showCuts && e.pick == ModelEditor::Pick::Faces) {
+    if ((e.showCuts || e.hoverOpening) && e.pick == ModelEditor::Pick::Faces) {
+        const auto& shownOpening = e.hoverOpening ? *e.hoverOpening : e.opening;
         for (const auto fi : e.faces) {
-            const auto corners = mesh::openingCorners(m, fi, e.opening);
+            const auto corners = mesh::openingCorners(m, fi, shownOpening);
             if (!corners) continue;
             for (std::size_t i = 0; i < 4; ++i) {
                 line(toScreen(view, (*corners)[i]), toScreen(view, (*corners)[(i + 1) % 4]), IM_COL32(80, 230, 255, 230), 2);
@@ -491,7 +576,20 @@ bool Viewer::drawModelOverlay(std::size_t view) {
         }
     }
     // Points, or the faces' middles (what a click on an edge-on face in a 2D view picks).
-    if (e.pick == ModelEditor::Pick::Points) {
+    if (e.pick == ModelEditor::Pick::Edges) {
+        // Every edge (the 3D view has them already), the selected ones bright and thick, each with a dot at its
+        // middle (what a box takes).
+        for (const auto& edge : e.edgesList()) {
+            const bool selected = e.edges.contains(edge);
+            const auto& a = screen[edge.first];
+            const auto& b = screen[edge.second];
+            if (!a || !b) continue;
+            if (selected) list->AddLine(*a, *b, kSelectedColour, 3);
+            else if (!perspective) list->AddLine(*a, *b, kEdgeColour);
+            list->AddCircleFilled({(a->x + b->x) / 2, (a->y + b->y) / 2}, selected ? 3.5f : 2.0f,
+                                  selected ? kSelectedColour : kCentreColour);
+        }
+    } else if (e.pick == ModelEditor::Pick::Points) {
         for (std::uint32_t i = 0; i < m.points.size(); ++i) {
             if (!screen[i]) continue;
             const bool selected = e.points.contains(i);
@@ -589,6 +687,21 @@ void Viewer::modelExtrude(double distance) {
 
 void Viewer::modelDelete() {
     auto& e = *modelEditor_;
+    if (e.pick == ModelEditor::Pick::Edges && !e.edges.empty()) {
+        // An edge goes by joining the faces either side of it (undoing a cut or a slice).
+        auto copy = e.edit.mesh();
+        int dissolved = 0;
+        for (const auto& edge : e.edges) dissolved += mesh::dissolveEdge(copy, edge) ? 1 : 0;
+        if (dissolved == 0) {
+            status_ = "Those edges cannot go: an edge goes only between two faces lying flat together.";
+            return;
+        }
+        e.edit.change() = std::move(copy);
+        status_ = std::format("Removed {} edge{}, joining the faces either side.", dissolved, dissolved == 1 ? "" : "s");
+        e.edges.clear();
+        modelChanged();
+        return;
+    }
     if (e.pick == ModelEditor::Pick::Points && !e.points.empty()) {
         mesh::removePoints(e.edit.change(), e.points);
         status_ = std::format("Removed {} point{}.", e.points.size(), e.points.size() == 1 ? "" : "s");
@@ -611,8 +724,25 @@ void Viewer::modelFlip() {
 
 void Viewer::modelJoin() {
     auto& e = *modelEditor_;
+    if (e.pick == ModelEditor::Pick::Edges) {
+        if (e.edges.size() != 2) {
+            status_ = "Join: pick two edges of one face; it is cut between their middles.";
+            return;
+        }
+        auto copy = e.edit.mesh();
+        const auto half = mesh::connectEdges(copy, *e.edges.begin(), *e.edges.rbegin());
+        if (!half) {
+            status_ = "Those two edges are not on one face.";
+            return;
+        }
+        e.edit.change() = std::move(copy);
+        e.edges.clear();
+        modelChanged();
+        status_ = "Cut the face between the two edges' middles.";
+        return;
+    }
     if (e.pick != ModelEditor::Pick::Points || e.points.size() < 2) {
-        status_ = "Join: pick two points of one face to cut it, or three or more to fill a face between them (1).";
+        status_ = "Join: pick two points of one face to cut it, three or more to fill a face (1), or two edges (2).";
         return;
     }
     if (e.points.size() == 2) {
@@ -664,8 +794,78 @@ void Viewer::modelSplitEdge() {
     modelChanged();
 }
 
+void Viewer::modelSplitEdges() {
+    auto& e = *modelEditor_;
+    if (e.pick != ModelEditor::Pick::Edges || e.edges.empty()) return;
+    auto copy = e.edit.mesh();
+    mesh::PointSet made;
+    for (const auto& [a, b] : e.edges) {
+        if (const auto mid = mesh::splitEdge(copy, a, b)) made.insert(*mid);
+    }
+    e.edit.change() = std::move(copy);
+    e.edges.clear();
+    e.pick = ModelEditor::Pick::Points;
+    e.points = std::move(made);
+    modelChanged();
+    status_ = std::format("Split {} edge{}; their new middle points are selected.", e.points.size(), e.points.size() == 1 ? "" : "s");
+}
+
+void Viewer::modelExtendEdges(int vertical) {
+    auto& e = *modelEditor_;
+    if (e.pick != ModelEditor::Pick::Edges || e.edges.empty()) return;
+    auto copy = e.edit.mesh();
+    std::vector<std::uint32_t> made;
+    if (vertical != 0) {
+        made = mesh::extendEdges(copy, e.edges, {0, vertical * e.extrudeBy, 0});
+    } else {
+        // Each edge out across its own face (a floor's edges outward, a wall's top upward...).
+        for (const auto& edge : e.edges) {
+            const auto out = mesh::outwardOf(copy, edge);
+            if (!out) continue;
+            const auto one = mesh::extendEdges(copy, {edge}, *out * e.extrudeBy);
+            made.insert(made.end(), one.begin(), one.end());
+        }
+    }
+    if (made.empty()) {
+        status_ = "Nothing to grow from: those edges border no face.";
+        return;
+    }
+    e.edit.change() = std::move(copy);
+    // The new faces' far edges, ready to grow again.
+    const auto& m = e.edit.mesh();
+    e.edges.clear();
+    for (const auto f : made) {
+        const auto& p = m.faces[f].points;
+        e.edges.insert(mesh::edgeOf(p[2], p[3]));
+    }
+    modelChanged();
+    status_ = std::format("Grew {} face{} {:g} units; their far edges are selected (grow again to go further).", made.size(),
+                          made.size() == 1 ? "" : "s", e.extrudeBy);
+}
+
 void Viewer::modelWeld() {
     auto& e = *modelEditor_;
+    if (e.pick == ModelEditor::Pick::Edges && !e.edges.empty()) {
+        // Each edge to a point at its middle; later edges found again by where their ends are (welds renumber).
+        auto copy = e.edit.mesh();
+        std::vector<std::pair<Vec3, Vec3>> ends;
+        for (const auto& [a, b] : e.edges) ends.emplace_back(copy.points[a], copy.points[b]);
+        auto find = [&](Vec3 p) -> std::optional<std::uint32_t> {
+            for (std::uint32_t i = 0; i < copy.points.size(); ++i) {
+                if (mesh::length(copy.points[i] - p) < 1e-6) return i;
+            }
+            return std::nullopt;
+        };
+        for (const auto& [pa, pb] : ends) {
+            const auto a = find(pa), b = find(pb);
+            if (a && b && *a != *b) mesh::weld(copy, {*a, *b}, (pa + pb) * 0.5);
+        }
+        e.edit.change() = std::move(copy);
+        e.edges.clear();
+        modelChanged();
+        status_ = "Each edge became a point at its middle.";
+        return;
+    }
     if (e.pick != ModelEditor::Pick::Points || e.points.size() < 2) {
         status_ = "Weld: pick two or more points; they become one at their middle.";
         return;
@@ -777,6 +977,214 @@ void Viewer::modelAddStairs() {
     modelChanged();
 }
 
+// ---- the right-click menu ----
+
+std::optional<Vec3> Viewer::modelFaceHit(std::size_t view, ImVec2 at, std::uint32_t face) const {
+    const auto& m = modelEditor_->edit.mesh();
+    if (face >= m.faces.size()) return std::nullopt;
+    const auto& v = views_[view];
+    const auto ray = cameraOf(view).rayThrough(at.x - v.min.x, at.y - v.min.y, v.size.x, v.size.y);
+    const auto& f = m.faces[face];
+    std::optional<double> best;
+    for (const auto& t : mesh::triangulate(m, f)) {
+        const auto hit = scene::intersectTriangle(ray, m.points[f.points[t[0]]], m.points[f.points[t[1]]], m.points[f.points[t[2]]]);
+        if (hit && (!best || *hit < *best)) best = hit;
+    }
+    if (best) return ray.origin + ray.direction * *best;
+    // Edge-on in a 2D view (picked by its middle): where the ray passes closest to that middle.
+    const Vec3 c = m.centre(f);
+    return ray.origin + ray.direction * mesh::dot(c - ray.origin, ray.direction);
+}
+
+void Viewer::modelSnapToGrid() {
+    auto& e = *modelEditor_;
+    const auto moving = modelMovingPoints();
+    if (moving.empty()) return;
+    auto& m = e.edit.change();
+    for (const auto p : moving) m.points[p] = mesh::snapTo(m.points[p], e.grid);
+    modelChanged();
+    status_ = std::format("{} point{} onto the {:g} grid.", moving.size(), moving.size() == 1 ? "" : "s", e.grid);
+}
+
+void Viewer::modelSelectByTexture(mesh::FaceTexture texture) {
+    auto& e = *modelEditor_;
+    const auto& m = e.edit.mesh();
+    e.pick = ModelEditor::Pick::Faces;
+    e.faces.clear();
+    for (std::uint32_t f = 0; f < m.faces.size(); ++f) {
+        if (m.faces[f].texture == texture) e.faces.insert(f);
+    }
+    status_ = std::format("{} face{} in {}/{}.", e.faces.size(), e.faces.size() == 1 ? "" : "s", texture.archive, texture.record);
+}
+
+void Viewer::drawModelContextMenu() {
+    if (!modelEditor_ || !modelEditor_->menu) return;
+    auto& e = *modelEditor_;
+    const auto menu = *e.menu;
+    const auto& m = e.edit.mesh();
+    const bool faces = e.pick == ModelEditor::Pick::Faces;
+    const auto accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+
+    if (!menu.element) {
+        ImGui::TextDisabled("Nothing here");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Add box", nullptr, false)) modelAddBox();
+        ImGui::SetItemTooltip("The Shapes section's box: %.0f, %.0f, %.0f to %.0f, %.0f, %.0f", e.shape.min.x, e.shape.min.y,
+                              e.shape.min.z, e.shape.max.x, e.shape.max.y, e.shape.max.z);
+        if (ImGui::MenuItem("Add stairs")) modelAddStairs();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Select all", "Ctrl+A")) {
+            e.clearPicked();
+            if (e.pick == ModelEditor::Pick::Edges) {
+                e.edges = mesh::edgesOf(m);
+            } else {
+                const auto n = static_cast<std::uint32_t>(faces ? m.faces.size() : m.points.size());
+                for (std::uint32_t i = 0; i < n; ++i) e.select(i, false);
+            }
+        }
+        if (ImGui::MenuItem("Frame the model", "F")) {
+            e.points.clear();
+            e.edges.clear();
+            e.faces.clear();
+            frameModel();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Pick points", "1", e.pick == ModelEditor::Pick::Points)) e.pick = ModelEditor::Pick::Points;
+        if (ImGui::MenuItem("Pick edges", "2", e.pick == ModelEditor::Pick::Edges)) e.pick = ModelEditor::Pick::Edges;
+        if (ImGui::MenuItem("Pick faces", "3", e.pick == ModelEditor::Pick::Faces)) e.pick = ModelEditor::Pick::Faces;
+        return;
+    }
+
+    if (e.pick == ModelEditor::Pick::Edges) {
+        const auto& list = e.edgesList();
+        if (*menu.element >= list.size()) return;
+        const auto edge = list[*menu.element];
+        const double len = mesh::length(m.points[edge.second] - m.points[edge.first]);
+        if (e.edges.size() > 1) ImGui::TextColored(accent, "%zu edges", e.edges.size());
+        else ImGui::TextColored(accent, "Edge %u-%u  (%.0f long)", edge.first, edge.second, len);
+        ImGui::Separator();
+        if (ImGui::MenuItem(std::format("Grow out {:g}", e.extrudeBy).c_str())) modelExtendEdges(0);
+        ImGui::SetItemTooltip("A new face from each edge, out across the face beside it");
+        if (ImGui::MenuItem(std::format("Grow up {:g}", e.extrudeBy).c_str())) modelExtendEdges(1);
+        if (ImGui::MenuItem(std::format("Grow down {:g}", e.extrudeBy).c_str())) modelExtendEdges(-1);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Split in the middle")) modelSplitEdges();
+        if (ImGui::MenuItem("Cut the face between them", "J", false, e.edges.size() == 2)) modelJoin();
+        ImGui::SetItemTooltip("Two edges of one face: a cut straight across it between their middles");
+        if (ImGui::MenuItem("Collapse to a point")) modelWeld();
+        if (ImGui::MenuItem("Onto the grid")) modelSnapToGrid();
+        if (ImGui::MenuItem("Select the faces beside it")) {
+            mesh::FaceSet beside;
+            for (const auto& sel : e.edges) {
+                for (const auto f : mesh::facesWithEdge(m, sel)) beside.insert(f);
+            }
+            e.pick = ModelEditor::Pick::Faces;
+            e.faces = std::move(beside);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Remove (join the faces either side)", "Del")) modelDelete();
+        if (ImGui::MenuItem("Frame", "F")) frameModel();
+        return;
+    }
+
+    if (faces) {
+        const auto f = *menu.element;
+        if (f >= m.faces.size()) return;
+        const auto texture = m.faces[f].texture;
+        if (e.faces.size() > 1) ImGui::TextColored(accent, "%zu faces", e.faces.size());
+        else ImGui::TextColored(accent, "Face %u  (%d/%d)", f, texture.archive, texture.record);
+        ImGui::Separator();
+        if (ImGui::MenuItem(std::format("Push out {:g}", e.extrudeBy).c_str(), "X")) modelExtrude(-e.extrudeBy);
+        if (ImGui::MenuItem(std::format("Pull in {:g}", e.extrudeBy).c_str(), "Shift+X")) modelExtrude(e.extrudeBy);
+        if (ImGui::BeginMenu("Cut an opening")) {
+            const double depth = e.opening.depth;
+            auto cut = [&](const char* label, mesh::Opening o) {
+                if (ImGui::MenuItem(label)) {
+                    e.opening = o;
+                    modelCutOpening();
+                }
+                if (ImGui::IsItemHovered()) e.hoverOpening = o;
+            };
+            cut("Door 64 x 96", {.width = 64, .height = 96, .bottom = 0, .across = 0, .depth = depth});
+            cut("Arch 128 x 128", {.width = 128, .height = 128, .bottom = 0, .across = 0, .depth = depth});
+            cut("Window 32 x 32", {.width = 32, .height = 32, .bottom = 48, .across = 0, .depth = depth});
+            ImGui::Separator();
+            if (ImGui::MenuItem(std::format("The Cuts section's: {:g} x {:g}, up {:g}, across {:g}", e.opening.width,
+                                            e.opening.height, e.opening.bottom, e.opening.across).c_str())) {
+                modelCutOpening();
+            }
+            if (ImGui::IsItemHovered()) e.hoverOpening = e.opening;
+            ImGui::Separator();
+            ImGui::TextDisabled("Reveal depth %g (set in the Cuts section)", depth);
+            ImGui::EndMenu();
+        }
+        if (menu.at && ImGui::BeginMenu("Slice here")) {
+            const auto at = mesh::snapTo(*menu.at, e.grid);
+            for (int axis = 0; axis < 3; ++axis) {
+                const double value = axis == 0 ? at.x : axis == 1 ? at.y : at.z;
+                const char* what = axis == 1 ? "across (level)" : "up and down";
+                if (ImGui::MenuItem(std::format("{} = {:g}   {}", "XYZ"[axis], value, what).c_str())) {
+                    e.sliceAxis = axis;
+                    e.sliceAt = value;
+                    modelSlice();
+                }
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::SetItemTooltip("Cut the selected faces along a grid line through the point clicked");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Take its texture")) {
+            e.brush = texture;
+            e.browseArchive = texture.archive;
+        }
+        if (ImGui::MenuItem(std::format("Lay {}/{} on it", e.brush.archive, e.brush.record).c_str(), nullptr, false,
+                            !(texture == e.brush) || e.faces.size() > 1)) {
+            modelApplyTexture(e.brush);
+        }
+        if (ImGui::MenuItem("Fit the texture")) {
+            auto& changing = e.edit.change();
+            for (const auto sf : e.faces) {
+                const auto& t = textures_.get(changing.faces[sf].texture.archive, changing.faces[sf].texture.record);
+                mesh::fitTexture(changing, sf, t.width, t.height);
+            }
+            modelChanged();
+        }
+        if (ImGui::MenuItem("Classic alignment")) {
+            auto& changing = e.edit.change();
+            for (const auto sf : e.faces) changing.faces[sf].uv = {};
+            modelChanged();
+        }
+        if (ImGui::MenuItem(std::format("Select every face in {}/{}", texture.archive, texture.record).c_str())) {
+            modelSelectByTexture(texture);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Flip", "N")) modelFlip();
+        if (ImGui::MenuItem("Copy", "Ctrl+D")) modelDuplicate();
+        if (ImGui::MenuItem("Delete", "Del")) modelDelete();
+        if (ImGui::MenuItem("Frame", "F")) frameModel();
+        return;
+    }
+
+    const auto p = *menu.element;
+    if (p >= m.points.size()) return;
+    if (e.points.size() > 1) {
+        ImGui::TextColored(accent, "%zu points", e.points.size());
+    } else {
+        const auto& q = m.points[p];
+        ImGui::TextColored(accent, "Point %u  (%.0f, %.0f, %.0f)", p, q.x, q.y, q.z);
+    }
+    ImGui::Separator();
+    const auto n = e.points.size();
+    if (ImGui::MenuItem(n == 2 ? "Cut the face between them" : "Fill a face between them", "J", false, n >= 2)) modelJoin();
+    if (ImGui::MenuItem("Split the edge between them", nullptr, false, n == 2)) modelSplitEdge();
+    if (ImGui::MenuItem("Weld into one", nullptr, false, n >= 2)) modelWeld();
+    if (ImGui::MenuItem("Onto the grid")) modelSnapToGrid();
+    ImGui::SetItemTooltip("Each selected point to the nearest %g grid corner", e.grid);
+    ImGui::Separator();
+    if (ImGui::MenuItem("Delete", "Del")) modelDelete();
+    if (ImGui::MenuItem("Frame", "F")) frameModel();
+}
+
 // ---- keys ----
 
 bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
@@ -786,8 +1194,9 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
     if (key.key == SDLK_ESCAPE) {
         if (e.drag.kind == ModelEditor::Drag::Kind::Plane || e.drag.kind == ModelEditor::Drag::Kind::Axis) e.edit.cancelGesture();
         if (e.drag.kind != ModelEditor::Drag::Kind::None) e.drag = {};
-        else if (!e.points.empty() || !e.faces.empty()) {
+        else if (!e.points.empty() || !e.edges.empty() || !e.faces.empty()) {
             e.points.clear();
+            e.edges.clear();
             e.faces.clear();
         }
         modelChanged();
@@ -810,6 +1219,10 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
             case SDLK_D: modelDuplicate(); return true;
             case SDLK_A: {
                 const auto& m = e.edit.mesh();
+                if (e.pick == ModelEditor::Pick::Edges) {
+                    e.edges = mesh::edgesOf(m);
+                    return true;
+                }
                 auto& set = e.pick == ModelEditor::Pick::Points ? e.points : e.faces;
                 const auto n = static_cast<std::uint32_t>(e.pick == ModelEditor::Pick::Points ? m.points.size() : m.faces.size());
                 set.clear();
@@ -821,10 +1234,15 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
     }
     const double g = e.grid;
     switch (key.key) {
+        case SDLK_LEFTBRACKET: stepModelGrid(-1); return true;
+        case SDLK_RIGHTBRACKET: stepModelGrid(1); return true;
         case SDLK_1: e.pick = ModelEditor::Pick::Points; return true;
-        case SDLK_2: e.pick = ModelEditor::Pick::Faces; return true;
+        case SDLK_2: e.pick = ModelEditor::Pick::Edges; return true;
+        case SDLK_3: e.pick = ModelEditor::Pick::Faces; return true;
         case SDLK_TAB:
-            e.pick = e.pick == ModelEditor::Pick::Points ? ModelEditor::Pick::Faces : ModelEditor::Pick::Points;
+            e.pick = e.pick == ModelEditor::Pick::Points  ? ModelEditor::Pick::Edges
+                     : e.pick == ModelEditor::Pick::Edges ? ModelEditor::Pick::Faces
+                                                          : ModelEditor::Pick::Points;
             return true;
         case SDLK_DELETE:
         case SDLK_BACKSPACE: modelDelete(); return true;
@@ -845,23 +1263,98 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
 
 // ---- the panel ----
 
+void Viewer::stepModelGrid(int direction) {
+    auto& e = *modelEditor_;
+    auto it = std::ranges::find(kGridSteps, e.grid);
+    if (it == kGridSteps.end()) it = std::ranges::lower_bound(kGridSteps, e.grid);
+    const auto i = std::clamp<std::ptrdiff_t>((it - kGridSteps.begin()) + direction, 0, std::ssize(kGridSteps) - 1);
+    e.grid = kGridSteps[static_cast<std::size_t>(i)];
+    status_ = std::format("Grid {:g} ([ smaller, ] bigger).", e.grid);
+}
+
+void Viewer::loadTextureArchiveLists() {
+    if (!textureArchives_.empty()) return;
+    textureArchives_ = formats::listTextureArchives(arena2_.dir);
+    // Which archives classic dungeon pieces wear, counted over every face of every model a classic block places.
+    for (const auto& [id, info] : catalog_.models()) {
+        if (info.uses == 0 || project::isCustomModelId(id)) continue;
+        const auto index = arena2_.arch3d.findById(id);
+        if (!index) continue;
+        const auto mesh = formats::parseArch3dMesh(arena2_.arch3d.record(*index), id);
+        if (!mesh) continue;
+        std::set<int> mine;
+        for (const auto& plane : mesh->planes) mine.insert(plane.textureArchive());
+        for (const int a : mine) ++classicTextureUses_[a];
+    }
+}
+
 void Viewer::drawModelTextures() {
     auto& e = *modelEditor_;
-    ImGui::SetNextItemWidth(140);
-    const auto label = [&](int a) {
-        const auto d = textures_.description(a);
-        const bool base = std::ranges::find(kBaseArchives, a) != kBaseArchives.end();
-        return std::format("{}{}{}", a, d.empty() ? "" : "  " + d, base ? "  (dungeon set)" : "");
+    loadTextureArchiveLists();
+    const auto descriptionOf = [&](int a) -> std::string {
+        const auto it = std::ranges::find(textureArchives_, a, &formats::TextureArchiveEntry::archive);
+        return it == textureArchives_.end() ? std::string() : it->description;
     };
-    if (ImGui::BeginCombo("##archive", label(e.browseArchive).c_str())) {
-        for (const int a : kBaseArchives) {
-            if (ImGui::Selectable(label(a).c_str(), a == e.browseArchive)) e.browseArchive = a;
+    const auto isBase = [](int a) { return std::ranges::find(kBaseArchives, a) != kBaseArchives.end(); };
+    const auto label = [&](int a) {
+        const auto d = descriptionOf(a);
+        return std::format("{}{}", a, d.empty() ? "" : "  " + d);
+    };
+    // Step to the archive before or after (only ones that exist).
+    auto step = [&](int direction) {
+        if (textureArchives_.empty()) return;
+        auto it = std::ranges::lower_bound(textureArchives_, e.browseArchive, {}, &formats::TextureArchiveEntry::archive);
+        if (direction < 0) {
+            if (it != textureArchives_.begin()) --it;
+        } else if (it != textureArchives_.end() && it->archive == e.browseArchive) {
+            ++it;
+        }
+        if (it == textureArchives_.end()) --it;
+        e.browseArchive = it->archive;
+    };
+    if (ImGui::ArrowButton("##previous", ImGuiDir_Left)) step(-1);
+    ImGui::SameLine(0, 2);
+    ImGui::SetNextItemWidth(-ImGui::GetFrameHeight() - 4);
+    ImGui::SetNextWindowSizeConstraints({320, 0}, {600, 460});
+    if (ImGui::BeginCombo("##archive", label(e.browseArchive).c_str(), ImGuiComboFlags_HeightLarge)) {
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##filter", "number or name (stone, wood, sewer...)", textureFilter_, sizeof textureFilter_);
+        std::string want(textureFilter_);
+        for (auto& c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        auto matches = [&](int a) {
+            if (want.empty()) return true;
+            auto text = label(a);
+            for (auto& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return text.find(want) != std::string::npos;
+        };
+        auto item = [&](int a, const std::string& extra) {
+            if (!matches(a)) return;
+            if (ImGui::Selectable(std::format("{}{}##{}", label(a), extra, a).c_str(), a == e.browseArchive)) {
+                e.browseArchive = a;
+                textureFilter_[0] = 0;
+            }
+        };
+        ImGui::SeparatorText("Dungeon sets (each dungeon swaps them)");
+        for (const int a : kBaseArchives) item(a, "");
+        ImGui::SeparatorText("Used by classic dungeon pieces");
+        std::vector<std::pair<std::size_t, int>> used;
+        for (const auto& [a, n] : classicTextureUses_) {
+            if (!isBase(a)) used.emplace_back(n, a);
+        }
+        std::ranges::sort(used, std::greater{});
+        for (const auto& [n, a] : used) item(a, std::format("   ({} model{})", n, n == 1 ? "" : "s"));
+        ImGui::SeparatorText("All the others");
+        for (const auto& t : textureArchives_) {
+            if (!isBase(t.archive) && !classicTextureUses_.contains(t.archive)) item(t.archive, "");
         }
         ImGui::EndCombo();
     }
-    ImGui::SetItemTooltip("The six dungeon sets are swapped by each dungeon's texture table, as classic walls are:\n"
-                          "a face in set 120 shows that dungeon's walls. Any other archive shows as it is.");
-    ImGui::SameLine();
+    ImGui::SetItemTooltip("Every TEXTURE file in your ARENA2. The six dungeon sets are swapped by each dungeon's texture\n"
+                          "table, as classic walls are (a face in set 120 shows that dungeon's walls); any other\n"
+                          "archive shows as it is, in every dungeon.");
+    ImGui::SameLine(0, 2);
+    if (ImGui::ArrowButton("##next", ImGuiDir_Right)) step(1);
     ImGui::SetNextItemWidth(70);
     ImGui::InputInt("archive##number", &e.browseArchive, 0);
     e.browseArchive = std::clamp(e.browseArchive, 0, 511);
@@ -962,7 +1455,6 @@ void Viewer::drawModelEditorPanel() {
         ImGui::End();
         return;
     }
-    if (focusInspectorFrames_ > 0) ImGui::SetWindowFocus();
     auto& e = *modelEditor_;
     auto* model = editedModel();
     if (!model) {
@@ -988,7 +1480,8 @@ void Viewer::drawModelEditorPanel() {
         ImGui::End();
         return;
     }
-    ImGui::SetItemTooltip("Back to the dungeon. The model stays in the project (save it with the project).");
+    ImGui::SetItemTooltip("Stop editing this model (it stays in the project: save it with the project).\n"
+                          "To look at the dungeon meanwhile, pick the Viewports tab: the model waits in its own.");
     ImGui::TextDisabled("model %u   %zu points, %zu faces", model->id, m.points.size(), m.faces.size());
     static constexpr std::array<std::pair<const char*, const char*>, 3> kKinds = {
         {{"C00", "Architecture (corridor or room piece)"}, {"DOR", "Action door (swings open, can lock)"}, {"XBF", "Prop"}}};
@@ -1022,12 +1515,14 @@ void Viewer::drawModelEditorPanel() {
 
     // Picking and snapping.
     ImGui::SeparatorText("Pick");
-    int pick = e.pick == ModelEditor::Pick::Points ? 0 : 1;
+    int pick = static_cast<int>(e.pick);
     if (ImGui::RadioButton("Points (1)", &pick, 0)) e.pick = ModelEditor::Pick::Points;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Faces (2)", &pick, 1)) e.pick = ModelEditor::Pick::Faces;
+    if (ImGui::RadioButton("Edges (2)", &pick, 1)) e.pick = ModelEditor::Pick::Edges;
     ImGui::SameLine();
-    ImGui::TextDisabled("%zu selected", e.pick == ModelEditor::Pick::Points ? e.points.size() : e.faces.size());
+    if (ImGui::RadioButton("Faces (3)", &pick, 2)) e.pick = ModelEditor::Pick::Faces;
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu selected", e.selectedCount());
     {
         int index = 0;
         for (std::size_t i = 0; i < kGridSteps.size(); ++i) {
@@ -1041,7 +1536,7 @@ void Viewer::drawModelEditorPanel() {
             }
             ImGui::EndCombo();
         }
-        ImGui::SetItemTooltip("Block units. Classic pieces sit on 64 across and 128 up; a cell is 128 (3.2 m).");
+        ImGui::SetItemTooltip("Block units; [ and ] make it smaller and bigger.\nClassic pieces sit on 64 across and 128 up; a cell is 128 (3.2 m).");
     }
     ImGui::SameLine();
     ImGui::Checkbox("snap to points", &e.snapPoints);
@@ -1098,7 +1593,8 @@ void Viewer::drawModelEditorPanel() {
         ImGui::SetItemTooltip("Treads and risers climbing north across the box");
     }
 
-    if (ImGui::CollapsingHeader("Edit", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::TextDisabled("Right-click a face or point in a view for what you can do with it.");
+    if (ImGui::CollapsingHeader("Edit")) {
         ImGui::SetNextItemWidth(90);
         ImGui::InputDouble("##extrude", &e.extrudeBy, 0, 0, "%.0f");
         ImGui::SameLine();
@@ -1111,11 +1607,25 @@ void Viewer::drawModelEditorPanel() {
         ImGui::SetItemTooltip("Faces are seen from one side: turn the selected round");
         ImGui::SameLine();
         if (ImGui::Button("Join (J)")) modelJoin();
-        ImGui::SetItemTooltip("Two points across a face cut it in two; three or more make a face");
+        ImGui::SetItemTooltip("Two points across a face cut it in two; three or more make a face; two edges of a face\n"
+                              "cut it between their middles");
         ImGui::SameLine();
-        if (ImGui::Button("Split edge")) modelSplitEdge();
+        if (ImGui::Button("Split edge")) {
+            if (e.pick == ModelEditor::Pick::Edges) modelSplitEdges();
+            else modelSplitEdge();
+        }
+        ImGui::SetItemTooltip("A point in the middle of each selected edge (or of the edge between two points)");
         ImGui::SameLine();
         if (ImGui::Button("Weld")) modelWeld();
+        ImGui::BeginDisabled(e.pick != ModelEditor::Pick::Edges || e.edges.empty());
+        if (ImGui::Button("Grow out")) modelExtendEdges(0);
+        ImGui::SetItemTooltip("A new face from each edge, out across the face beside it (more floor, more wall), by\n"
+                              "the distance above");
+        ImGui::SameLine();
+        if (ImGui::Button("Grow up")) modelExtendEdges(1);
+        ImGui::SameLine();
+        if (ImGui::Button("Grow down")) modelExtendEdges(-1);
+        ImGui::EndDisabled();
         if (ImGui::Button("Copy (Ctrl+D)")) modelDuplicate();
         ImGui::SameLine();
         if (ImGui::Button("Delete (Del)")) modelDelete();
@@ -1143,7 +1653,7 @@ void Viewer::drawModelEditorPanel() {
         if (ImGui::Button("Mirror Z")) modelMirror(2);
     }
 
-    e.showCuts = ImGui::CollapsingHeader("Cuts", ImGuiTreeNodeFlags_DefaultOpen);
+    e.showCuts = ImGui::CollapsingHeader("Cuts");
     if (e.showCuts) {
         ImGui::TextDisabled("A doorway, window or trapdoor out of the selected faces (drawn on them in cyan).");
         double size[2] = {e.opening.width, e.opening.height};
@@ -1302,6 +1812,39 @@ Result<std::string> Viewer::checkModel(const std::filesystem::path& modDir) {
         log += std::format("cut a 64 x 96 door in the west wall, lined 32 deep: {} faces (was {}), {} lining selected, "
                            "{} problems\n", e.edit.mesh().faces.size(), before, e.faces.size(), problems.size());
         if (e.faces.size() != 4 || !problems.empty()) return fail("the door did not cut cleanly");
+    }
+
+    // Edges: the south wall's top and bottom edges, joined across the wall, then the cut removed again.
+    {
+        const auto& now = e.edit.mesh();
+        std::optional<std::uint32_t> south;
+        for (std::uint32_t f = 0; f < now.faces.size(); ++f) {
+            if (mesh::length(now.centre(now.faces[f]) - Vec3{0, 64, -128}) < 1e-3) south = f;
+        }
+        if (!south) return fail("the model has no south wall");
+        e.pick = ModelEditor::Pick::Edges;
+        e.edges.clear();
+        const auto& p = now.faces[*south].points;
+        for (std::size_t i = 0; i < p.size(); ++i) {
+            const auto edge = mesh::edgeOf(p[i], p[(i + 1) % p.size()]);
+            if (std::abs(now.points[edge.first].y - now.points[edge.second].y) < 1e-6) e.edges.insert(edge);   // level ones
+        }
+        const auto before = now.faces.size();
+        modelJoin();
+        const auto after = e.edit.mesh().faces.size();
+        // The cut: the new edge between the two halves (both faces seen from inside, lying flat together).
+        const auto& cut = e.edit.mesh();
+        e.edges.clear();
+        for (const auto& edge : mesh::edgesOf(cut)) {
+            const auto beside = mesh::facesWithEdge(cut, edge);
+            const Vec3 mid = (cut.points[edge.first] + cut.points[edge.second]) * 0.5;
+            if (beside.size() == 2 && std::abs(mid.z + 128) < 1e-6 && std::abs(mid.x) < 1e-6) e.edges.insert(edge);
+        }
+        modelDelete();
+        log += std::format("edges: joined the south wall's top and bottom edges ({} faces to {}), removed the cut ({} again)\n",
+                           before, after, e.edit.mesh().faces.size());
+        if (after != before + 1 || e.edit.mesh().faces.size() != before) return fail("the edge join did not undo cleanly");
+        e.pick = ModelEditor::Pick::Faces;
     }
 
     const auto* info = catalog_.model(id);

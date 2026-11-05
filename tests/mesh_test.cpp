@@ -461,3 +461,65 @@ TEST_CASE("slicing a room's walls along a grid line") {
     checkWinding(m);
     CHECK(checkMesh(m).empty());
 }
+
+TEST_CASE("edges: listed once, split, connected across a face, dissolved back") {
+    auto m = room();
+    CHECK(edgesOf(m).size() == 12);
+    const auto east = *faceAt(m, {64, 64, 0});
+    // The east wall's top and bottom edges.
+    std::optional<Edge> top, bottom;
+    const auto& wall = m.faces[east].points;
+    for (std::size_t i = 0; i < wall.size(); ++i) {
+        const auto e = edgeOf(wall[i], wall[(i + 1) % wall.size()]);
+        const double y = (m.points[e.first].y + m.points[e.second].y) / 2;
+        const double dz = std::abs(m.points[e.first].z - m.points[e.second].z);
+        if (dz > 1 && y > 64) top = e;
+        if (dz > 1 && y < 64) bottom = e;
+    }
+    REQUIRE(top);
+    REQUIRE(bottom);
+    CHECK(facesWithEdge(m, *top).size() == 2);   // the wall and the ceiling
+    const auto half = connectEdges(m, *top, *bottom);
+    REQUIRE(half);
+    CHECK(m.faces.size() == 7);
+    CHECK(m.faces[east].points.size() == 4);
+    CHECK(m.faces[*half].points.size() == 4);
+    const auto floor = std::ranges::find_if(m.faces, [&](const Face& f) { return m.normal(f).y > 0.5; });
+    REQUIRE(floor != m.faces.end());
+    CHECK(floor->points.size() == 5);   // the floor took the bottom edge's middle
+    checkWinding(m);
+    CHECK(checkMesh(m).empty());
+
+    // The cut between the halves dissolves back into one wall.
+    std::optional<Edge> cut;
+    for (const auto& e : edgesOf(m)) {
+        const auto faces = facesWithEdge(m, e);
+        if (faces.size() == 2 && std::ranges::find(faces, east) != faces.end() && std::ranges::find(faces, *half) != faces.end()) cut = e;
+    }
+    REQUIRE(cut);
+    REQUIRE(dissolveEdge(m, *cut));
+    CHECK(m.faces.size() == 6);
+    const auto merged = *faceAt(m, {64, 64, 0});
+    CHECK(near(m.normal(m.faces[merged]), {-1, 0, 0}));
+    CHECK(faceArea(m, m.faces[merged]) == doctest::Approx(256 * 128));
+    checkWinding(m);
+    // A corner edge (wall and floor) does not dissolve: the faces do not lie flat together.
+    CHECK_FALSE(dissolveEdge(m, *bottom));
+}
+
+TEST_CASE("edges extend into new faces, seen from the side the face beside them is") {
+    Mesh m;
+    addQuad(m, {{{0, 0, 0}, {128, 0, 0}, {128, 0, 128}, {0, 0, 128}}}, {0, 1, 0}, {120, 2});
+    // The north edge of a floor, grown out north and then up.
+    const Edge north = edgeOf(2, 3);
+    const auto out = outwardOf(m, north);
+    REQUIRE(out);
+    CHECK(near(*out, {0, 0, 1}));
+    const auto more = extendEdges(m, {north}, *out * 64);
+    REQUIRE(more.size() == 1);
+    CHECK(near(m.normal(m.faces[more[0]]), {0, 1, 0}));   // more floor
+    CHECK(m.faces[more[0]].texture == FaceTexture{120, 2});
+    CHECK(near(m.centre(m.faces[more[0]]), {64, 0, 160}));
+    checkWinding(m);
+    CHECK(pointsOf(m, EdgeSet{north}).size() == 2);
+}

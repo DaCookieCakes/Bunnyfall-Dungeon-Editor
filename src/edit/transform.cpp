@@ -35,6 +35,26 @@ formats::RdbObject transformed(const formats::RdbObject& start, std::array<std::
     return obj;
 }
 
+formats::RdbObject turnedAbout(const formats::RdbObject& start, int axis, std::int32_t turn, std::array<double, 3> pivot) {
+    auto obj = start;
+    if (turn == 0) return obj;
+    const double degrees = double(turn) * 360.0 / catalog::kRotationUnitsPerTurn;
+    const auto r = catalog::axisRotation(axis, degrees);
+    // Positions in editor space (file Y negated) about the pivot.
+    const catalog::Vec3 offset{start.x - pivot[0], -(start.y - pivot[1]), start.z - pivot[2]};
+    const auto turned = r * offset;
+    obj.x = static_cast<std::int32_t>(std::lround(pivot[0] + turned.x));
+    obj.y = static_cast<std::int32_t>(std::lround(pivot[1] - turned.y));
+    obj.z = static_cast<std::int32_t>(std::lround(pivot[2] + turned.z));
+    if (auto* m = std::get_if<formats::RdbModel>(&obj.resource)) {
+        const auto angles = catalog::rdbRotationOf(r * catalog::rdbModelRotation(m->xRotation, m->yRotation, m->zRotation));
+        m->xRotation = angles[0];
+        m->yRotation = angles[1];
+        m->zRotation = angles[2];
+    }
+    return obj;
+}
+
 void forgetRemoved(std::vector<ObjectSlot>& slots, ObjectSlot removed) {
     std::erase(slots, removed);
     for (auto& s : slots) {
