@@ -529,6 +529,8 @@ Extrusion extrudeEdgesInPlace(Mesh& mesh, const EdgeSet& edges) {
         out.moving.insert(p[2]);
         out.moving.insert(p[3]);
         out.edges.insert(edgeOf(p[2], p[3]));
+        out.originals[p[2]] = p[1];
+        out.originals[p[3]] = p[0];
     }
     return out;
 }
@@ -553,8 +555,77 @@ Extrusion extrudePointsInPlace(Mesh& mesh, const PointSet& points) {
         mesh.points.push_back(mesh.points[p]);
         copyOf[p] = copy;
         out.moving.insert(copy);
+        out.originals[copy] = p;
     }
     return out;
+}
+
+namespace {
+
+/// The normals of the faces round each point, each way counted once, so three faces on one side and one on the other
+/// do not lean the corner toward the three.
+using PointNormals = std::map<std::uint32_t, std::vector<Vec3>>;
+
+void addNormal(PointNormals& normals, std::uint32_t point, Vec3 normal) {
+    auto& seen = normals[point];
+    if (std::ranges::none_of(seen, [&](Vec3 n) { return dot(n, normal) > 0.9999; })) seen.push_back(normal);
+}
+
+PointDirections directionsFrom(const PointNormals& normals) {
+    constexpr double kSharpest = 0.25;   // at most four times as far, however sharp the corner
+    PointDirections out;
+    for (const auto& [point, seen] : normals) {
+        Vec3 sum;
+        for (const auto n : seen) sum = sum + n;
+        // Faces back to back cancel out: go the way of the first, with no corner to stretch to.
+        if (length(sum) < 1e-6) {
+            out[point] = seen.front();
+            continue;
+        }
+        const Vec3 way = normalised(sum);
+        double least = 1;
+        for (const auto n : seen) least = std::min(least, dot(way, n));
+        out[point] = way * (1 / std::max(least, kSharpest));
+    }
+    return out;
+}
+
+} // namespace
+
+PointDirections directionsOfFaces(const Mesh& mesh, const FaceSet& faces) {
+    PointNormals normals;
+    for (const auto f : faces) {
+        if (f >= mesh.faces.size()) continue;
+        const Vec3 n = mesh.normal(mesh.faces[f]);
+        if (length(n) < 0.5) continue;   // no area: it has no normal
+        for (const auto p : mesh.faces[f].points) addNormal(normals, p, n);
+    }
+    return directionsFrom(normals);
+}
+
+PointDirections directionsOfEdges(const Mesh& mesh, const EdgeSet& edges) {
+    PointNormals normals;
+    for (const auto& edge : edges) {
+        for (const auto f : facesWithEdge(mesh, edge)) {
+            const Vec3 n = mesh.normal(mesh.faces[f]);
+            if (length(n) < 0.5) continue;
+            addNormal(normals, edge.first, n);
+            addNormal(normals, edge.second, n);
+        }
+    }
+    return directionsFrom(normals);
+}
+
+PointDirections directionsOfPoints(const Mesh& mesh, const PointSet& points) {
+    PointNormals normals;
+    for (const auto& face : mesh.faces) {
+        const Vec3 n = mesh.normal(face);
+        if (length(n) < 0.5) continue;
+        for (const auto p : face.points) {
+            if (points.contains(p)) addNormal(normals, p, n);
+        }
+    }
+    return directionsFrom(normals);
 }
 
 bool dissolveEdge(Mesh& mesh, Edge edge) {

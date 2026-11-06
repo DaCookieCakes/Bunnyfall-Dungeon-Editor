@@ -158,6 +158,7 @@ void Viewer::drawUi() {
                     {"  Arrows, PgUp/PgDn", "move the selection a grid step"},
                     {"  [ and ]", "a smaller / bigger grid"},
                     {"  R", "handles: move / turn / scale (Shift while dragging: no snapping)"},
+                    {"  Shift+N", "along normals: moving and extruding go along the selected faces' normals, at any angle"},
                     {"  G, then G", "move with the pointer (click puts it down); G again slides along the edges"},
                     {"  Right-click", "a menu for the face, edge or point under the pointer; elsewhere, the selection's"},
                 };

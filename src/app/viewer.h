@@ -405,7 +405,7 @@ private:
         std::array<std::pair<catalog::Vec3, double>, 4> savedViews{};
         // A drag in a view: a box, the selection moved in the view's plane, or along one axis.
         struct Drag {
-            enum class Kind { None, Pending, Box, Plane, Axis, Turn, Scale, Slide } kind = Kind::None;
+            enum class Kind { None, Pending, Box, Plane, Axis, Turn, Scale, Slide, Normal } kind = Kind::None;
             std::size_t view = 0;
             ImVec2 press{};
             bool byKey = false;                 // started by G: a left click puts it down (not letting go)
@@ -422,6 +422,8 @@ private:
             double extent = 0;                  // Scale: the selection's size along the axis at the start
             std::uint32_t anchorPoint = 0;      // Slide: the point nearest the pointer, which the pointer leads
             std::map<std::uint32_t, std::vector<std::uint32_t>> neighbours;   // Slide: what each point can slide toward
+            mesh::PointDirections directions;   // Normal: how far each point goes per unit
+            catalog::Vec3 normalLead;           // Normal: the way (unit length) the pointer's travel is read along
             // An extrusion being pulled out: the selection before it, put back when it is cancelled.
             struct Before {
                 mesh::PointSet points;
@@ -431,10 +433,11 @@ private:
             std::optional<Before> extruding;
             [[nodiscard]] bool moving() const {
                 return kind == Kind::Plane || kind == Kind::Axis || kind == Kind::Turn || kind == Kind::Scale ||
-                       kind == Kind::Slide;
+                       kind == Kind::Slide || kind == Kind::Normal;
             }
         } drag;
         enum class Tool { Move, Turn, Scale } tool = Tool::Move;   // which handles the selection shows (R)
+        bool alongNormals = false;   // moving and extruding go along the faces' normals (Shift+N)
         double scaleBy[3] = {1, 1, 1};
         double turnBy = 90;
         double grid = 16;            // block units; snaps moves and new shapes
@@ -545,6 +548,11 @@ private:
     bool startModelGrab(std::size_t view, ImVec2 at, bool byKey, bool upAndDown = false);
     /// G G: each moving point slides along one of its own edges toward the pointer, no further than its other end.
     bool startModelSlide(std::size_t view, ImVec2 at);
+    /// How each point of the selection moves along the normals, by the pick kind.
+    [[nodiscard]] mesh::PointDirections modelSelectionDirections() const;
+    /// Moving `directions`' points along them: the point nearest the pointer leads. False, with a status saying why, when
+    /// there is no normal to go along or it points straight at this view.
+    bool startModelNormalMove(std::size_t view, ImVec2 at, bool byKey, mesh::PointDirections directions);
     void modelScale(catalog::Vec3 factors);
     void modelTurnAbout(int axis, double degrees);
     void modelTurn(double degrees);

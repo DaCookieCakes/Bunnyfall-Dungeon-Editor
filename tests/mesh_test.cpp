@@ -670,3 +670,112 @@ TEST_CASE("extruding in place, to pull out with the pointer: faces, edges and po
         CHECK(extrudeEdgesInPlace(m, {}).faces.empty());
     }
 }
+
+namespace {
+
+bool sameSpot(de::catalog::Vec3 a, de::catalog::Vec3 b) { return de::mesh::length(a - b) < 1e-6; }
+
+/// A roof of two faces meeting at a ridge along Z, each sloping at 45 degrees and seen from above.
+de::mesh::Mesh ridge() {
+    de::mesh::Mesh m;
+    m.points = {{-100, 0, 0}, {-100, 0, 100}, {0, 100, 100}, {0, 100, 0}, {100, 0, 100}, {100, 0, 0}};
+    m.faces.push_back({{0, 1, 2, 3}, {}, {}});
+    m.faces.push_back({{3, 2, 4, 5}, {}, {}});
+    return m;
+}
+
+} // namespace
+
+TEST_CASE("normals: a sloping face moves square to itself, and stays that shape") {
+    using namespace de::mesh;
+    const auto m = ridge();
+    const auto n = m.normal(m.faces[0]);
+    REQUIRE(n.y > 0);
+    const auto dirs = directionsOfFaces(m, {0});
+    CHECK(dirs.size() == 4);
+    for (const auto& [p, d] : dirs) CHECK(sameSpot(d, n));
+}
+
+TEST_CASE("normals: faces at an angle each move their full distance and stay joined") {
+    using namespace de::mesh;
+    auto m = ridge();
+    const auto n0 = m.normal(m.faces[0]), n1 = m.normal(m.faces[1]);
+    const auto dirs = directionsOfFaces(m, {0, 1});
+    CHECK(sameSpot(dirs.at(0), n0));   // on one face only
+    CHECK(sameSpot(dirs.at(5), n1));
+    // On the ridge: straight up, far enough to be on both moved planes.
+    CHECK(sameSpot(dirs.at(2), {0, std::sqrt(2.0), 0}));
+    CHECK(dot(dirs.at(2), n0) == doctest::Approx(1));
+    CHECK(dot(dirs.at(2), n1) == doctest::Approx(1));
+    for (const auto& [p, d] : dirs) m.points[p] = m.points[p] + d * 32.0;
+    // The faces moved 32 units off their planes and are still flat.
+    const auto start = ridge();
+    for (const auto f : {0, 1}) {
+        const auto normal = start.normal(start.faces[static_cast<std::size_t>(f)]);
+        const auto base = start.points[start.faces[static_cast<std::size_t>(f)].points[0]];
+        for (const auto p : m.faces[static_cast<std::size_t>(f)].points) {
+            CHECK(dot(m.points[p] - base, normal) == doctest::Approx(32));
+        }
+    }
+}
+
+TEST_CASE("normals: faces coplanar with others do not lean a corner") {
+    using namespace de::mesh;
+    Mesh m;
+    m.points = {{0, 0, 0}, {0, 0, 100}, {100, 0, 100}, {100, 0, 0}, {200, 0, 100}, {200, 0, 0}, {100, 100, 100}, {100, 100, 0}};
+    m.faces.push_back({{0, 1, 2, 3}, {}, {}});
+    m.faces.push_back({{3, 2, 4, 5}, {}, {}});
+    const auto flat = directionsOfFaces(m, {0, 1});
+    CHECK(sameSpot(flat.at(2), {0, 1, 0}));
+    CHECK(sameSpot(flat.at(3), {0, 1, 0}));
+}
+
+TEST_CASE("normals: back to back faces and sharp corners stay finite") {
+    using namespace de::mesh;
+    Mesh m;
+    m.points = {{0, 0, 0}, {0, 0, 100}, {100, 0, 100}, {100, 0, 0}};
+    m.faces.push_back({{0, 1, 2, 3}, {}, {}});
+    m.faces.push_back({{3, 2, 1, 0}, {}, {}});
+    const auto dirs = directionsOfFaces(m, {0, 1});
+    CHECK(length(dirs.at(0)) == doctest::Approx(1));
+
+    // Two faces folded almost flat together: the corner is limited, not sent off to where their planes nearly meet.
+    Mesh sharp;
+    sharp.points = {{-1, -100, 0}, {-1, -100, 100}, {0, 0, 100}, {0, 0, 0}, {1, -100, 100}, {1, -100, 0}};
+    sharp.faces.push_back({{0, 1, 2, 3}, {}, {}});
+    sharp.faces.push_back({{3, 2, 4, 5}, {}, {}});
+    const auto way = directionsOfFaces(sharp, {0, 1}).at(2);
+    CHECK(sameSpot(normalised(way), {0, 1, 0}));
+    CHECK(length(way) == doctest::Approx(4));
+}
+
+TEST_CASE("normals: edges and points read the faces round them; loose ones have none") {
+    using namespace de::mesh;
+    auto m = ridge();
+    m.points.push_back({500, 500, 500});
+    const auto loose = static_cast<std::uint32_t>(m.points.size() - 1);
+    const auto edges = directionsOfEdges(m, {edgeOf(2, 3)});
+    CHECK(edges.size() == 2);
+    CHECK(sameSpot(edges.at(2), {0, std::sqrt(2.0), 0}));
+    const auto points = directionsOfPoints(m, {0, 2, loose});
+    CHECK(points.size() == 2);
+    CHECK_FALSE(points.contains(loose));
+    CHECK(sameSpot(points.at(0), m.normal(m.faces[0])));
+    CHECK(sameSpot(points.at(2), {0, std::sqrt(2.0), 0}));
+    CHECK(directionsOfEdges(m, {edgeOf(0, 2)}).empty());   // no face has that edge
+}
+
+TEST_CASE("normals: an extrusion says which point each copy is of") {
+    using namespace de::mesh;
+    auto m = ridge();
+    const auto madeEdges = extrudeEdgesInPlace(m, {edgeOf(0, 1)});
+    REQUIRE(madeEdges.moving.size() == 2);
+    for (const auto copy : madeEdges.moving) {
+        REQUIRE(madeEdges.originals.contains(copy));
+        CHECK(sameSpot(m.points[copy], m.points[madeEdges.originals.at(copy)]));
+    }
+    auto n = ridge();
+    const auto madePoints = extrudePointsInPlace(n, {5});
+    REQUIRE(madePoints.moving.size() == 1);
+    CHECK(madePoints.originals.at(*madePoints.moving.begin()) == 5);
+}

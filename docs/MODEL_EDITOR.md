@@ -24,6 +24,12 @@ space's items are in its **Empty space** submenu). The **Model** panel (where Ed
   them (a lone point is copied on its own, to fill faces to with J). The copies follow the pointer like G; a click
   puts them down, right-click or Esc cancels (nothing is made, and a click without moving makes nothing either). In
   3D, floors and ceilings pull up and down and everything else across; Shift+E the other way round.
+- **Along normals** (**Shift+N**, or the panel) makes moving and extruding follow the way the geometry faces rather than
+  X, Y and Z, for anything at an angle. **E**, **G**, dragging the selection and the Move handle (now one blue arrow)
+  all go along the normals. One face moves square to itself. Selected faces at an angle each move the full distance and
+  stay joined, so a roof grows evenly thicker with its ridge rising to match. Edges and points use the faces they are
+  on; loose ones have no normal and stay put. The **distance** snaps to the grid (Shift: free), so corners of a sloping
+  face may leave the grid. If the normal points straight at a view, use another view.
 - **Edges**: **Grow out** adds a face from each edge across the face beside it (more floor, more wall), **Grow
   up/down** straight up or down, each by the distance under Edit, leaving the new far edges selected to grow again.
   **J** with two edges of a face cuts it between their middles; **Split edge** puts a point in each middle;

@@ -35,6 +35,7 @@ const ImU32 kCentreColour = IM_COL32(235, 235, 235, 110);
 const ImU32 kSelectedColour = IM_COL32(255, 170, 40, 255);
 const ImU32 kSelectedFill = IM_COL32(255, 170, 40, 60);
 const ImU32 kReferenceColour = IM_COL32(90, 200, 255, 120);
+constexpr ImU32 kNormalColour = IM_COL32(90, 215, 235, 255);
 constexpr std::array<ImU32, 3> kAxisColours = {IM_COL32(235, 80, 70, 255), IM_COL32(110, 210, 90, 255),
                                                IM_COL32(80, 140, 255, 255)};
 constexpr std::array<Vec3, 3> kAxes = {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
@@ -460,6 +461,7 @@ void Viewer::continueModelDrag() {
                 const auto press = d.press;
                 const auto view = d.view;
                 if (!startModelGrab(view, press, false)) return;
+                if (d.kind == ModelEditor::Drag::Kind::Normal) return;   // read from the next frame on
             }
             [[fallthrough]];
         case ModelEditor::Drag::Kind::Plane: {
@@ -501,6 +503,28 @@ void Viewer::continueModelDrag() {
                     Vec3 offset;
                     component(offset, d.axis) = mesh::snapTo(along, e.grid);
                     applyOffset(offset);
+                }
+            }
+            if (done) finish();
+            break;
+        }
+        case ModelEditor::Drag::Kind::Normal: {
+            // The pointer's travel along the lead's direction on screen, as for an axis. Each point goes its own way by it,
+            // and the distance is what snaps: corners of a sloping face have no grid to land on.
+            const auto a = toScreen(d.view, d.anchor);
+            const auto b = toScreen(d.view, d.anchor + d.normalLead * 100.0);
+            if (a && b) {
+                const ImVec2 s = sub(*b, *a);
+                const float len = std::hypot(s.x, s.y);
+                if (len > 1) {
+                    const ImVec2 moved = sub(io.MousePos, d.press);
+                    const double along = (moved.x * s.x + moved.y * s.y) / len * (100.0 / len);
+                    const double by = free ? along : mesh::snapTo(along, e.grid);
+                    auto& m = e.edit.change();
+                    for (const auto& [p, start] : d.start) {
+                        if (p < m.points.size()) m.points[p] = start + d.directions.at(p) * by;
+                    }
+                    status_ = std::format("{:g} units along the normals (Shift: no snap)", by);
                 }
             }
             if (done) finish();
@@ -734,7 +758,7 @@ bool Viewer::drawModelOverlay(std::size_t view) {
     const bool idle = e.drag.kind == ModelEditor::Drag::Kind::None && ImGui::IsItemHovered();
     const bool handlesShown = centre && (e.drag.kind == ModelEditor::Drag::Kind::None || e.drag.view == view) &&
                               e.drag.kind != ModelEditor::Drag::Kind::Box && e.drag.kind != ModelEditor::Drag::Kind::Slide &&
-                              !(e.drag.kind == ModelEditor::Drag::Kind::Plane && e.drag.byKey);
+                              !((e.drag.kind == ModelEditor::Drag::Kind::Plane || e.drag.kind == ModelEditor::Drag::Kind::Normal) && e.drag.byKey);
     const auto c = handlesShown ? toScreen(view, *centre) : std::nullopt;
     if (c) {
         const double reach = kHandleLength * unitsPerPoint(view, *centre);
@@ -797,6 +821,28 @@ bool Viewer::drawModelOverlay(std::size_t view) {
                     if (const auto angle = angleOnRing(ray, *centre, *hovered)) {
                         startDrag(ModelEditor::Drag::Kind::Turn, *hovered);
                         e.drag.lastAngle = *angle;
+                    }
+                }
+            }
+        } else if (e.tool == ModelEditor::Tool::Move && e.alongNormals) {
+            // One arrow, along the selection's normals taken together.
+            auto directions = modelSelectionDirections();
+            Vec3 sum;
+            for (const auto& [p, way] : directions) sum = sum + way;
+            const Vec3 way = mesh::length(sum) > 1e-6 ? mesh::normalised(sum)
+                             : directions.empty() ? Vec3{} : mesh::normalised(directions.begin()->second);
+            const auto tip = directions.empty() ? std::nullopt : toScreen(view, *centre + way * reach);
+            if (tip && distance(*tip, *c) >= 12) {
+                const bool hot = e.drag.kind == ModelEditor::Drag::Kind::Normal || (idle && segmentDistance(io.MousePos, *c, *tip) < 6);
+                const auto colour = hot ? hotColour : kNormalColour;
+                list->AddLine(*c, *tip, colour, hot ? 3.5f : 2.5f);
+                list->AddCircleFilled(*tip, hot ? 6.0f : 5.0f, colour);
+                if (hot && idle) {
+                    overHandle = true;
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                        startModelNormalMove(view, io.MousePos, false, std::move(directions))) {
+                        e.drag.anchor = *centre;
+                        e.drag.normalLead = way;
                     }
                 }
             }
@@ -899,6 +945,8 @@ void Viewer::modelExtrudeAndMove(std::size_t view, ImVec2 at) {
         return;
     }
     const ModelEditor::Drag::Before before{e.points, e.edges, e.faces};
+    // Read before anything is made: the new faces join edges to their copies with no area yet, so they have no normal.
+    const auto directionsBefore = e.alongNormals ? modelSelectionDirections() : mesh::PointDirections{};
     e.edit.beginGesture();
     auto& m = e.edit.change();
     mesh::Extrusion made;
@@ -923,18 +971,33 @@ void Viewer::modelExtrudeAndMove(std::size_t view, ImVec2 at) {
         for (const auto f : e.faces) n = n + e.edit.mesh().normal(e.edit.mesh().faces[f]);
         level = std::abs(mesh::normalised(n).y) > 0.7;
     }
-    if (!startModelGrab(view, at, true, level)) {
+    // Along the normals: copies go the way the points they were made from would (faces kept theirs, so read them again).
+    mesh::PointDirections directions;
+    if (e.alongNormals) {
+        if (e.pick == ModelEditor::Pick::Faces) {
+            directions = mesh::directionsOfFaces(e.edit.mesh(), e.faces);
+        } else {
+            for (const auto& [copy, original] : made.originals) {
+                if (const auto way = directionsBefore.find(original); way != directionsBefore.end()) directions[copy] = way->second;
+            }
+        }
+    }
+    if (e.alongNormals ? !startModelNormalMove(view, at, true, std::move(directions)) : !startModelGrab(view, at, true, level)) {
+        const auto why = status_;
         e.edit.cancelGesture();
         e.points = before.points;
         e.edges = before.edges;
         e.faces = before.faces;
         modelChanged();
-        status_ = "Extrude: this view cannot move it (try another view).";
+        status_ = e.alongNormals ? why : "Extrude: this view cannot move it (try another view).";
         return;
     }
     e.drag.extruding = before;
-    status_ = std::format("Extruding {} new face{}: move the pointer, click to put it down (3D: Shift+E the other way), "
-                          "right-click or Esc cancels.", made.faces.size(), made.faces.size() == 1 ? "" : "s");
+    status_ = e.alongNormals
+                  ? std::format("Extruding {} new face{} along the normals: move the pointer, click to put it down, "
+                                "right-click or Esc cancels.", made.faces.size(), made.faces.size() == 1 ? "" : "s")
+                  : std::format("Extruding {} new face{}: move the pointer, click to put it down (3D: Shift+E the other way), "
+                                "right-click or Esc cancels.", made.faces.size(), made.faces.size() == 1 ? "" : "s");
 }
 
 void Viewer::cancelModelDrag() {
@@ -1149,11 +1212,59 @@ void Viewer::modelMove(Vec3 offset) {
     modelChanged();
 }
 
+mesh::PointDirections Viewer::modelSelectionDirections() const {
+    const auto& e = *modelEditor_;
+    switch (e.pick) {
+        case ModelEditor::Pick::Points: return mesh::directionsOfPoints(e.edit.mesh(), e.points);
+        case ModelEditor::Pick::Edges: return mesh::directionsOfEdges(e.edit.mesh(), e.edges);
+        case ModelEditor::Pick::Faces: return mesh::directionsOfFaces(e.edit.mesh(), e.faces);
+    }
+    return {};
+}
+
+bool Viewer::startModelNormalMove(std::size_t view, ImVec2 at, bool byKey, mesh::PointDirections directions) {
+    auto& e = *modelEditor_;
+    if (directions.empty()) {
+        status_ = "No normal to go along: the selection is on no face.";
+        return false;
+    }
+    const auto& m = e.edit.mesh();
+    // The point nearest the pointer leads.
+    float best = 1e30f;
+    auto lead = directions.begin();
+    for (auto it = directions.begin(); it != directions.end(); ++it) {
+        if (const auto s = toScreen(view, m.points[it->first]); s && distance(*s, at) < best) {
+            best = distance(*s, at);
+            lead = it;
+        }
+    }
+    const Vec3 anchor = m.points[lead->first], way = mesh::normalised(lead->second);
+    const auto a = toScreen(view, anchor), b = toScreen(view, anchor + way * 100.0);
+    if (!a || !b || distance(*a, *b) < 4) {
+        status_ = "The normal points straight at this view: move it in another.";
+        return false;
+    }
+    auto& d = e.drag;
+    d = {};
+    d.kind = ModelEditor::Drag::Kind::Normal;
+    d.view = view;
+    d.press = at;
+    d.byKey = byKey;
+    d.anchor = anchor;
+    d.normalLead = way;
+    for (const auto& [p, _] : directions) d.start[p] = m.points[p];
+    d.directions = std::move(directions);
+    e.edit.beginGesture();
+    if (byKey) status_ = "Moving along the normals: click to put it down, right-click or Esc cancels, G slides along the edges.";
+    return true;
+}
+
 bool Viewer::startModelGrab(std::size_t view, ImVec2 at, bool byKey, bool upAndDown) {
     auto& e = *modelEditor_;
     auto& d = e.drag;
     const auto moving = modelMovingPoints();
     if (moving.empty()) return false;
+    if (e.alongNormals) return startModelNormalMove(view, at, byKey, modelSelectionDirections());
     const auto& v = views_[view];
     d = {};
     d.view = view;
@@ -1591,7 +1702,7 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
         const auto at = ImGui::GetIO().MousePos;
         if (e.drag.extruding) {
             // Sliding starts from where things were; an extrusion has nowhere to slide from.
-        } else if (e.drag.kind == ModelEditor::Drag::Kind::Plane && e.drag.byKey) {
+        } else if ((e.drag.kind == ModelEditor::Drag::Kind::Plane || e.drag.kind == ModelEditor::Drag::Kind::Normal) && e.drag.byKey) {
             // G again: from moving freely to sliding along the edges (from where it all started).
             const auto view = e.drag.view;
             e.edit.cancelGesture();
@@ -1605,7 +1716,8 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
             modelChanged();
             startModelGrab(view, at, true);
         } else if (e.drag.kind == ModelEditor::Drag::Kind::None) {
-            if (!startModelGrab(pointerView_, at, true)) status_ = "Pick something to move first.";
+            if (modelMovingPoints().empty()) status_ = "Pick something to move first.";
+            else startModelGrab(pointerView_, at, true);
         }
         return true;
     }
@@ -1660,7 +1772,14 @@ bool Viewer::handleModelKey(const SDL_KeyboardEvent& key) {
         case SDLK_DELETE:
         case SDLK_BACKSPACE: modelDelete(); return true;
         case SDLK_X: modelExtrude(shift ? e.extrudeBy : -e.extrudeBy); return true;
-        case SDLK_N: modelFlip(); return true;
+        case SDLK_N:
+            if (shift) {
+                e.alongNormals = !e.alongNormals;
+                status_ = e.alongNormals ? "Along normals: moving and extruding go along the faces' normals." : "Along normals off.";
+            } else {
+                modelFlip();
+            }
+            return true;
         case SDLK_J: modelJoin(); return true;
         case SDLK_F: frameModel(); return true;
         case SDLK_HOME: frameModel(); return true;
@@ -1944,6 +2063,10 @@ void Viewer::drawModelEditorPanel() {
     if (ImGui::RadioButton("Scale", &tool, 2)) e.tool = ModelEditor::Tool::Scale;
     ImGui::SameLine();
     ImGui::TextDisabled("handles (R)");
+    ImGui::Checkbox("Along normals (Shift+N)", &e.alongNormals);
+    ImGui::SetItemTooltip("Moving (the arrow, a drag, G) and extruding (E) go along the normals of the selected faces,\n"
+                          "whatever angle they are at. Faces at an angle stay joined and each moves the full distance.\n"
+                          "The distance snaps to the grid. Shift: no snapping.");
     ImGui::SetItemTooltip("Arrows move along an axis; rings turn about one (15-degree steps); square-ended arms scale\n"
                           "along one, the middle square all three (sizes land on the grid). Shift: no snapping.\n"
                           "G moves with the pointer, G again slides along the edges.");
@@ -2242,6 +2365,39 @@ Result<std::string> Viewer::checkModel(const std::filesystem::path& modDir) {
             }
             if (std::tuple{e.points, e.edges, e.faces} != picked) return fail("cancelling an extrude lost the selection");
         }
+        // Along the normals: the same, with the pointer led 64 units out through the drag itself.
+        e.alongNormals = true;
+        const auto pointerBefore = ImGui::GetIO().MousePos;
+        for (const auto pick : {ModelEditor::Pick::Faces, ModelEditor::Pick::Edges, ModelEditor::Pick::Points}) {
+            e.pick = pick;
+            e.faces = {*east};
+            e.edges = {*wallEdges.begin()};
+            e.points = mesh::pointsOf(shape, mesh::FaceSet{*east});
+            modelExtrudeAndMove(1, *wallMiddle);
+            if (!e.drag.extruding || e.drag.kind != ModelEditor::Drag::Kind::Normal) return fail("extrude along normals did not start: " + status_);
+            const auto from = toScreen(1, e.drag.anchor), to = toScreen(1, e.drag.anchor + e.drag.normalLead * 64.0);
+            if (!from || !to) return fail("the Top view does not show the normal");
+            ImGui::GetIO().MousePos = {wallMiddle->x + to->x - from->x, wallMiddle->y + to->y - from->y};
+            continueModelDrag();
+            if (e.drag.kind != ModelEditor::Drag::Kind::Normal) return fail("the drag along normals ended by itself");
+            for (const auto& [p, start] : e.drag.start) {
+                if (mesh::length(e.edit.mesh().points[p] - (start + e.drag.directions.at(p) * 64.0)) > 1e-6) {
+                    return fail("a point did not go 64 units along its normal");
+                }
+            }
+            cancelModelDrag();
+            if (e.edit.mesh().points.size() != shape.points.size() || e.edit.mesh().faces.size() != shape.faces.size()) {
+                return fail("cancelling an extrude along normals left something behind");
+            }
+        }
+        // Moving (G) puts everything back on a cancel too, and the wall's normal is its way.
+        e.pick = ModelEditor::Pick::Faces;
+        e.faces = {*east};
+        if (!startModelGrab(1, *wallMiddle, true) || e.drag.kind != ModelEditor::Drag::Kind::Normal) return fail("G along normals did not start: " + status_);
+        cancelModelDrag();
+        ImGui::GetIO().MousePos = pointerBefore;
+        e.alongNormals = false;
+        log += "extrude and move along normals: followed the pointer 64 units and cancelled cleanly in all three picks\n";
         e.pick = pickBefore;
         e.faces = facesBefore;
         e.points.clear();

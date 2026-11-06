@@ -72,11 +72,13 @@ std::vector<std::uint32_t> addStairs(Mesh& mesh, const catalog::Box& box, int st
 std::vector<std::uint32_t> extrude(Mesh& mesh, const FaceSet& faces, double distance);
 
 /// An extrusion made with nothing moved yet, for the pointer to pull out: the new faces, the points that are to move
-/// (the copies), and for edges the far edges (the copies' edges).
+/// (the copies), and for edges the far edges (the copies' edges). Edges and points also say which point each copy is
+/// of; faces keep their indices, so their normals can simply be read again.
 struct Extrusion {
     std::vector<std::uint32_t> faces;
     PointSet moving;
     EdgeSet edges;
+    std::map<std::uint32_t, std::uint32_t> originals;
 };
 /// As extrude at no distance: the faces keep their indices and take the copies of their points, side faces join them
 /// to where they were.
@@ -90,6 +92,17 @@ Extrusion extrudePointsInPlace(Mesh& mesh, const PointSet& points);
 /// A new face through `points`, ordered round them on their common plane and turned to face `viewer`. Nullopt when
 /// fewer than three points or they lie on one line.
 std::optional<std::uint32_t> fillFace(Mesh& mesh, const PointSet& points, FaceTexture texture, Vec3 viewer);
+
+/// How far each point goes for one unit along the normals. On one flat face that is the face's normal. Where faces at
+/// an angle meet it is between their normals and longer than one, so each face moves its full distance and stays flat
+/// and joined to the next (a corner goes to where the moved faces' planes meet, limited at very sharp ones).
+using PointDirections = std::map<std::uint32_t, Vec3>;
+/// Each point of the faces, from the given faces it is on.
+PointDirections directionsOfFaces(const Mesh& mesh, const FaceSet& faces);
+/// Each point of the edges, from the faces that have one of the given edges through it. A point on no face has none.
+PointDirections directionsOfEdges(const Mesh& mesh, const EdgeSet& edges);
+/// Each point, from every face it is on. A point on no face has none.
+PointDirections directionsOfPoints(const Mesh& mesh, const PointSet& points);
 
 /// Cuts a face in two along the line between two of its points (not neighbours on it). The new half keeps the
 /// texture. Answers the new face.
