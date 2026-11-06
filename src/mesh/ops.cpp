@@ -905,6 +905,89 @@ void fitTexture(Mesh& mesh, std::uint32_t face, int width, int height) {
     }
 }
 
+std::optional<Edge> sharedEdge(const Mesh& mesh, std::uint32_t a, std::uint32_t b) {
+    if (a >= mesh.faces.size() || b >= mesh.faces.size() || a == b) return std::nullopt;
+    const auto& p = mesh.faces[a].points;
+    for (std::size_t i = 0; i < p.size(); ++i) {
+        const auto edge = edgeOf(p[i], p[(i + 1) % p.size()]);
+        const auto& q = mesh.faces[b].points;
+        for (std::size_t k = 0; k < q.size(); ++k) {
+            if (edgeOf(q[k], q[(k + 1) % q.size()]) == edge) return edge;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<UvAlign> wrappedAlign(const Mesh& mesh, std::uint32_t source, std::uint32_t target) {
+    if (source == target || source >= mesh.faces.size() || target >= mesh.faces.size()) return std::nullopt;
+    const auto& from = mesh.faces[source];
+    const auto& to = mesh.faces[target];
+    const Vec3 nFrom = mesh.normal(from), nTo = mesh.normal(to);
+    if (length(nFrom) < 0.5 || length(nTo) < 0.5) return std::nullopt;
+
+    // The fold: a turn about the line the planes meet on (`along`, through `hinge`). It leaves that line where it is and
+    // takes the source's direction square to the line on its plane, cross(n, along), to the target's. So the two faces can
+    // be measured in the same terms: the target must change texels along those two directions as the source does.
+    const auto shared = sharedEdge(mesh, source, target);
+    const Vec3 meet = cross(nFrom, nTo);
+    constexpr double kParallel = 1e-6;
+    Vec3 hinge = shared ? (mesh.points[shared->first] + mesh.points[shared->second]) * 0.5 : mesh.centre(to);
+    Vec3 along;
+    if (shared) {
+        along = normalised(mesh.points[shared->second] - mesh.points[shared->first]);
+    } else if (length(meet) > kParallel) {
+        along = normalised(meet);
+        // The point on both planes (n.x = d for each).
+        const double dFrom = dot(nFrom, mesh.centre(from)), dTo = dot(nTo, mesh.centre(to));
+        hinge = (cross(nTo, meet) * dFrom + cross(meet, nFrom) * dTo) * (1 / dot(meet, meet));
+    } else {
+        // Parallel, with no line to fold on: any way across the source will do.
+        const Vec3 u = uvAxes(nFrom, 0).u;
+        along = normalised(u - nFrom * dot(u, nFrom));
+        if (dot(nFrom, nTo) < 0) hinge = (mesh.centre(from) + mesh.centre(to)) * 0.5;
+    }
+    // A shared edge may run either way: the fold takes `nFrom` to `nTo` whichever, as long as both squares use one `along`.
+    const Vec3 squareFrom = cross(nFrom, along), squareTo = cross(nTo, along);
+
+    const auto axesFrom = uvAxes(nFrom, from.uv.angle);
+    const double su = from.uv.scaleU != 0 ? from.uv.scaleU : kClassicUnitsPerTexel;
+    const double sv = from.uv.scaleV != 0 ? from.uv.scaleV : kClassicUnitsPerTexel;
+    // Texels per unit the target must have, along the line and square to it, for its U and its V.
+    const double wantU[2] = {dot(along, axesFrom.u) / su, dot(squareFrom, axesFrom.u) / su};
+    const double wantV[2] = {dot(along, axesFrom.v) / sv, dot(squareFrom, axesFrom.v) / sv};
+    // What the target's unturned axes give along those two directions. On a wall they lie in the face and this is a plain
+    // turn; on a slope laid from above they are stretched, which is why scales can differ from the source's there.
+    const auto base = uvAxes(nTo, 0);
+    const double m00 = dot(along, base.u), m01 = dot(along, base.v), m10 = dot(squareTo, base.u), m11 = dot(squareTo, base.v);
+    const double det = m00 * m11 - m01 * m10;
+    if (std::abs(det) < 1e-9) return std::nullopt;
+    // Solve for U and V in terms of the unturned axes: each should be the turned axis over its scale.
+    const double w1x = (m11 * wantU[0] - m01 * wantU[1]) / det, w1y = (m00 * wantU[1] - m10 * wantU[0]) / det;
+    const double w2x = (m11 * wantV[0] - m01 * wantV[1]) / det, w2y = (m00 * wantV[1] - m10 * wantV[0]) / det;
+    // U gives (cos, sin), V (-sin, cos). They agree unless a slope skews the picture, which one turn cannot match: then take
+    // the turn between them.
+    const double len1 = std::hypot(w1x, w1y), len2 = std::hypot(w2x, w2y);
+    if (len1 < 1e-12 || len2 < 1e-12) return std::nullopt;
+    const double c = w1x / len1 + w2y / len2, s = w1y / len1 - w2x / len2;
+    double degrees = std::atan2(s, c) * 180 / std::numbers::pi;
+    degrees = std::round(degrees * 1e6) / 1e6 + 0.0;   // + 0.0: no minus zero
+    if (degrees <= -180) degrees += 360;
+
+    const double radians = degrees * std::numbers::pi / 180;
+    const double along1 = w1x * std::cos(radians) + w1y * std::sin(radians);
+    const double along2 = -w2x * std::sin(radians) + w2y * std::cos(radians);
+    UvAlign out = from.uv;
+    out.angle = degrees;
+    if (along1 > 1e-12) out.scaleU = std::round(1e9 / along1) / 1e9;
+    if (along2 > 1e-12) out.scaleV = std::round(1e9 / along2) / 1e9;
+    out.offsetU = out.offsetV = 0;
+    const auto wanted = texelsAt(from.uv, axesFrom, hinge);
+    const auto got = texelsAt(out, uvAxes(nTo, degrees), hinge);
+    out.offsetU = wanted[0] - got[0];
+    out.offsetV = wanted[1] - got[1];
+    return out;
+}
+
 double snapTo(double value, double step) { return step > 0 ? std::round(value / step) * step : value; }
 
 Vec3 snapTo(Vec3 value, double step) { return {snapTo(value.x, step), snapTo(value.y, step), snapTo(value.z, step)}; }

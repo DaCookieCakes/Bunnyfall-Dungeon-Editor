@@ -779,3 +779,162 @@ TEST_CASE("normals: an extrusion says which point each copy is of") {
     REQUIRE(madePoints.moving.size() == 1);
     CHECK(madePoints.originals.at(*madePoints.moving.begin()) == 5);
 }
+
+namespace {
+
+std::array<double, 2> texelOn(const de::mesh::Mesh& m, std::uint32_t face, de::catalog::Vec3 at) {
+    const auto& f = m.faces[face];
+    return de::mesh::texelsAt(f.uv, de::mesh::uvAxes(m.normal(f), f.uv.angle), at);
+}
+
+/// Wraps `source` onto `target`, and answers the mesh with it done.
+de::mesh::Mesh wrapped(de::mesh::Mesh m, std::uint32_t source, std::uint32_t target) {
+    auto align = de::mesh::wrappedAlign(m, source, target);
+    REQUIRE(align);
+    m.faces[target].uv = *align;
+    return m;
+}
+
+void sameTexel(const std::array<double, 2>& a, const std::array<double, 2>& b) {
+    CHECK(a[0] == doctest::Approx(b[0]).epsilon(1e-6));
+    CHECK(a[1] == doctest::Approx(b[1]).epsilon(1e-6));
+}
+
+} // namespace
+
+namespace {
+
+/// A roof steep enough for its faces to be walls to the texture (their axes lie in them).
+de::mesh::Mesh steepRoof() {
+    de::mesh::Mesh m;
+    m.points = {{-50, 0, 0}, {-50, 0, 100}, {0, 100, 100}, {0, 100, 0}, {50, 0, 100}, {50, 0, 0}};
+    m.faces.push_back({{0, 1, 2, 3}, {}, {}});
+    m.faces.push_back({{3, 2, 4, 5}, {}, {}});
+    return m;
+}
+
+/// The picture's step from the ridge's middle down one slope is the step back up the other, carried on.
+void runsOnOverTheRidge(const de::mesh::Mesh& m, de::catalog::Vec3 top, de::catalog::Vec3 nearSide, de::catalog::Vec3 farSide) {
+    const auto t = texelOn(m, 0, top), a = texelOn(m, 0, nearSide), b = texelOn(m, 1, farSide);
+    sameTexel({b[0] - t[0], b[1] - t[1]}, {t[0] - a[0], t[1] - a[1]});
+}
+
+} // namespace
+
+TEST_CASE("wrap: the texture meets along the shared edge and runs on across it") {
+    auto start = steepRoof();
+    start.faces[0].uv = {1.5, 3, 11, -7, 30};   // any scale, offset and turn
+    const auto m = wrapped(start, 0, 1);
+    CHECK(m.faces[1].uv.scaleU == doctest::Approx(1.5));
+    CHECK(m.faces[1].uv.scaleV == doctest::Approx(3));
+    sameTexel(texelOn(m, 1, m.points[2]), texelOn(m, 0, m.points[2]));
+    sameTexel(texelOn(m, 1, m.points[3]), texelOn(m, 0, m.points[3]));
+    runsOnOverTheRidge(m, {0, 100, 50}, {-50, 0, 50}, {50, 0, 50});
+}
+
+TEST_CASE("wrap: shallow slopes, laid from above, run on too") {
+    auto start = ridge();   // 45 degrees: floors to the texture, its picture stretched down the slope
+    REQUIRE(start.normal(start.faces[0]).y > 0.7);
+    start.faces[0].uv = {2, 2, 5, 9, 0};
+    const auto m = wrapped(start, 0, 1);
+    sameTexel(texelOn(m, 1, m.points[2]), texelOn(m, 0, m.points[2]));
+    sameTexel(texelOn(m, 1, m.points[3]), texelOn(m, 0, m.points[3]));
+    runsOnOverTheRidge(m, {0, 100, 50}, {-100, 0, 50}, {100, 0, 50});
+
+    // From a flat floor onto a ramp up from it: the same along the foot, and no stretch where it folds up.
+    de::mesh::Mesh ramp;
+    ramp.points = {{-100, 0, 0}, {-100, 0, 100}, {0, 0, 100}, {0, 0, 0}, {100, 50, 100}, {100, 50, 0}};
+    ramp.faces.push_back({{0, 1, 2, 3}, {}, {2, 2, 3, 1, 0}});
+    ramp.faces.push_back({{3, 2, 4, 5}, {}, {}});
+    REQUIRE(ramp.normal(ramp.faces[1]).y > 0.7);
+    const auto up = wrapped(ramp, 0, 1);
+    sameTexel(texelOn(up, 1, up.points[2]), texelOn(up, 0, up.points[2]));
+    sameTexel(texelOn(up, 1, up.points[3]), texelOn(up, 0, up.points[3]));
+    // Texels per unit along the ramp's own slope equal the floor's.
+    const auto foot = texelOn(up, 1, {0, 0, 50}), head = texelOn(up, 1, {100, 50, 50});
+    CHECK(std::hypot(head[0] - foot[0], head[1] - foot[1]) == doctest::Approx(de::mesh::length({100, 50, 0}) / 2));
+
+    // A turned texture on a slope skews: it still meets at the middle of the edge, and stays close along it.
+    auto skew = ridge();
+    skew.faces[0].uv = {2, 2, 0, 0, 30};
+    const auto skewed = wrapped(skew, 0, 1);
+    sameTexel(texelOn(skewed, 1, {0, 100, 50}), texelOn(skewed, 0, {0, 100, 50}));
+    const auto x = texelOn(skewed, 1, skewed.points[2]), y = texelOn(skewed, 0, skewed.points[2]);
+    CHECK(std::hypot(x[0] - y[0], x[1] - y[1]) < 8);
+}
+
+TEST_CASE("wrap: round the walls of a room the picture stays level, and a floor carries up a wall") {
+    using namespace de::mesh;
+    Mesh m;
+    addBox(m, {{0, 0, 0}, {256, 128, 128}}, true, {true, true, true, true, true, true}, {});
+    const auto faceFacing = [&](Vec3 way) {
+        for (std::uint32_t f = 0; f < m.faces.size(); ++f) {
+            if (dot(m.normal(m.faces[f]), way) > 0.99) return f;
+        }
+        FAIL("no such face");
+        return std::uint32_t{0};
+    };
+    const std::array<std::uint32_t, 4> round = {faceFacing({1, 0, 0}), faceFacing({0, 0, 1}), faceFacing({-1, 0, 0}), faceFacing({0, 0, -1})};
+    m.faces[round[0]].uv = {2, 2, 5, 9, 0};
+    for (std::size_t i = 0; i + 1 < round.size(); ++i) {
+        REQUIRE(sharedEdge(m, round[i], round[i + 1]));
+        m = wrapped(m, round[i], round[i + 1]);
+        CHECK(m.faces[round[i + 1]].uv.angle == doctest::Approx(0));
+        CHECK(m.faces[round[i + 1]].uv.offsetV == doctest::Approx(9));   // no step up or down at the corners
+        const auto edge = *sharedEdge(m, round[i], round[i + 1]);
+        sameTexel(texelOn(m, round[i + 1], m.points[edge.first]), texelOn(m, round[i], m.points[edge.first]));
+    }
+    // The last meets the first too: all the way round is the room's whole perimeter in texels, no seam but that one.
+    const auto closing = *sharedEdge(m, round[3], round[0]);
+    const auto last = texelOn(m, round[3], m.points[closing.first]), first = texelOn(m, round[0], m.points[closing.first]);
+    CHECK(std::abs(last[0] - first[0]) == doctest::Approx((256 + 128) * 2 / 2.0));
+    CHECK(last[1] == doctest::Approx(first[1]));
+
+    const auto floor = faceFacing({0, 1, 0}), wall = round[0];
+    m = wrapped(m, floor, wall);
+    const auto edge = *sharedEdge(m, floor, wall);
+    sameTexel(texelOn(m, wall, m.points[edge.first]), texelOn(m, floor, m.points[edge.first]));
+    sameTexel(texelOn(m, wall, m.points[edge.second]), texelOn(m, floor, m.points[edge.second]));
+    CHECK(std::abs(m.faces[wall].uv.angle) == doctest::Approx(90));
+}
+
+TEST_CASE("wrap: flat together keeps the alignment; back to back and apart still meet on their line") {
+    using namespace de::mesh;
+    Mesh flat;
+    flat.points = {{0, 0, 0}, {0, 0, 100}, {100, 0, 100}, {100, 0, 0}, {200, 0, 100}, {200, 0, 0}};
+    flat.faces.push_back({{0, 1, 2, 3}, {}, {1, 2, 3, 4, 45}});
+    flat.faces.push_back({{3, 2, 4, 5}, {}, {}});
+    const auto together = wrapped(flat, 0, 1);
+    CHECK(together.faces[1].uv.angle == doctest::Approx(45));
+    sameTexel(texelOn(together, 1, {150, 0, 50}), texelOn(together, 0, {150, 0, 50}));
+
+    Mesh back;
+    back.points = {{0, 0, 0}, {0, 0, 100}, {100, 0, 100}, {100, 0, 0}};
+    back.faces.push_back({{0, 1, 2, 3}, {}, {1, 1, 3, 4, 10}});
+    back.faces.push_back({{3, 2, 1, 0}, {}, {}});
+    const auto behind = wrapped(back, 0, 1);
+    sameTexel(texelOn(behind, 1, back.points[0]), texelOn(behind, 0, back.points[0]));
+
+    // A wall standing clear of the floor: they meet where the floor's plane would reach it.
+    Mesh apart;
+    apart.points = {{0, 0, 0}, {0, 0, 100}, {100, 0, 100}, {100, 0, 0}, {300, 50, 0}, {300, 50, 100}, {300, 150, 100}, {300, 150, 0}};
+    apart.faces.push_back({{0, 1, 2, 3}, {}, {2, 2, 6, 8, 0}});
+    apart.faces.push_back({{4, 5, 6, 7}, {}, {}});
+    REQUIRE_FALSE(sharedEdge(apart, 0, 1));
+    const auto carried = wrapped(apart, 0, 1);
+    sameTexel(texelOn(carried, 1, {300, 0, 40}), texelOn(carried, 0, {300, 0, 40}));
+}
+
+TEST_CASE("wrap: refuses one face, a face of no area, and faces not there") {
+    using namespace de::mesh;
+    auto m = ridge();
+    CHECK_FALSE(wrappedAlign(m, 0, 0));
+    CHECK_FALSE(wrappedAlign(m, 0, 9));
+    m.points.push_back({1, 1, 1});
+    m.points.push_back({2, 2, 2});
+    m.points.push_back({3, 3, 3});
+    const auto line = static_cast<std::uint32_t>(m.points.size());
+    m.faces.push_back({{line - 3, line - 2, line - 1}, {}, {}});
+    CHECK_FALSE(wrappedAlign(m, 0, 2));
+    CHECK_FALSE(wrappedAlign(m, 2, 0));
+}

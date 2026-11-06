@@ -357,7 +357,8 @@ void Viewer::viewInput(std::size_t index, bool overHandle) {
     }
     const bool modelDragging = modelling() && modelEditor_->drag.kind != ModelEditor::Drag::Kind::None;
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && drag_.kind == Drag::Kind::None && !modelDragging) {
-        if (linkFrom_) linkFrom_.reset();
+        if (modelling() && io.KeyAlt) modelWrapTextureAt(index, io.MousePos);
+        else if (linkFrom_) linkFrom_.reset();
         else if (grabbing_) endGrab(false);
         else if (placingAnything()) stopPlacing();
         else if (!ortho) {

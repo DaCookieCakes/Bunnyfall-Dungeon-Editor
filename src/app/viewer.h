@@ -559,6 +559,10 @@ private:
     void modelMirror(int axis);
     void modelDuplicate();
     void modelApplyTexture(mesh::FaceTexture texture);
+    /// Alt+right-click: the selected face's texture carried on onto the face under the pointer.
+    void modelWrapTextureAt(std::size_t view, ImVec2 at);
+    /// The selected face's texture carried on onto `target`, which then becomes the selection, to go on from.
+    void modelWrapTextureOnto(std::uint32_t target);
     void modelAddBox();
     void modelAddStairs();
     void modelCutOpening();

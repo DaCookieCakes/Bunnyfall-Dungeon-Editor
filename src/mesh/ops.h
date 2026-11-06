@@ -193,6 +193,15 @@ void scalePoints(Mesh& mesh, const PointSet& points, Vec3 centre, Vec3 factors);
 void setTexture(Mesh& mesh, const FaceSet& faces, FaceTexture texture);
 /// Scales and shifts a face's texture so one copy of a `width` x `height` texel picture covers it exactly.
 void fitTexture(Mesh& mesh, std::uint32_t face, int width, int height);
+/// An edge two faces both have, if any.
+std::optional<Edge> sharedEdge(const Mesh& mesh, std::uint32_t a, std::uint32_t b);
+/// The alignment that carries `source`'s texture on over `target`, like Hammer's Alt+right-click: as if `source` were
+/// folded about the line the two planes meet on (their shared edge) until it lay flat with `target`, its picture going
+/// on across. The turn and offsets are worked out; the scale carries over, except on slopes laid from above (a slope
+/// within about 45 degrees of flat), whose stretch it allows for. A slope with its texture also turned at an angle skews
+/// the picture, which a turn and scale cannot match exactly: it then meets exactly only at the edge's middle. Nullopt when
+/// they are one face or one has no area. Faces with no edge in common use the line their planes would meet on.
+std::optional<UvAlign> wrappedAlign(const Mesh& mesh, std::uint32_t source, std::uint32_t target);
 
 /// `value` to the nearest multiple of `step` (no change for a step of 0 or less).
 double snapTo(double value, double step);

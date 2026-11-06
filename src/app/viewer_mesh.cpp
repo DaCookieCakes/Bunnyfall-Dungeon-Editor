@@ -1380,6 +1380,53 @@ void Viewer::modelApplyTexture(mesh::FaceTexture texture) {
     modelChanged();
 }
 
+void Viewer::modelWrapTextureAt(std::size_t view, ImVec2 at) {
+    auto& e = *modelEditor_;
+    if (e.pick != ModelEditor::Pick::Faces) {
+        status_ = "Texture wrap works on faces: press 3, pick the face to carry on from, Alt+right-click the next.";
+        return;
+    }
+    if (e.faces.empty()) {
+        status_ = "Pick the face whose texture to carry on, then Alt+right-click the next.";
+        return;
+    }
+    const auto hit = pickModelElement(view, at);
+    if (!hit) {
+        status_ = "No face there to carry the texture onto.";
+        return;
+    }
+    modelWrapTextureOnto(*hit);
+}
+
+void Viewer::modelWrapTextureOnto(std::uint32_t target) {
+    auto& e = *modelEditor_;
+    const auto& m = e.edit.mesh();
+    // From several selected, the one beside the target: that is the one it can carry on from.
+    std::optional<std::uint32_t> source;
+    for (const auto f : e.faces) {
+        if (f == target) continue;
+        if (!source || (mesh::sharedEdge(m, f, target) && !mesh::sharedEdge(m, *source, target))) source = f;
+    }
+    if (!source) {
+        status_ = "That is the selected face: Alt+right-click another.";
+        return;
+    }
+    const auto align = mesh::wrappedAlign(m, *source, target);
+    if (!align) {
+        status_ = "One of those faces has no area, so it has no plane to wrap on.";
+        return;
+    }
+    const auto texture = m.faces[*source].texture;
+    const bool beside = mesh::sharedEdge(m, *source, target).has_value();
+    auto& changing = e.edit.change();
+    changing.faces[target].texture = texture;
+    changing.faces[target].uv = *align;
+    e.faces = {target};
+    modelChanged();
+    status_ = std::format("Carried {}/{} from face {} onto face {} (turned {:g} degrees){}.", texture.archive, texture.record, *source,
+                          target, align->angle, beside ? "" : "; they share no edge, so it lines up with where their planes would meet");
+}
+
 void Viewer::modelAddBox() {
     auto& e = *modelEditor_;
     const auto made = mesh::addBox(e.edit.change(), e.shape, e.inward, e.sides, {});
@@ -2422,6 +2469,42 @@ Result<std::string> Viewer::checkModel(const std::filesystem::path& modDir) {
     modelChanged();
     log += std::format("undo twice: texture back to 120/0 {}; redo twice\n", undone ? "yes" : "NO");
     if (!undone) return fail("undo did not put the texture back");
+
+    // Alt+right-click: the end wall's texture carried on onto a wall beside it, as one undo step that moves the selection.
+    {
+        const auto picked = e.pick;
+        const auto faces = e.faces;
+        const auto& now = e.edit.mesh();
+        std::optional<std::uint32_t> beside;
+        for (std::uint32_t f = 0; f < now.faces.size(); ++f) {
+            if (mesh::sharedEdge(now, *east, f)) {
+                beside = f;
+                break;
+            }
+        }
+        if (!beside) return fail("no face beside the end wall");
+        const auto before = now.faces[*beside];
+        e.pick = ModelEditor::Pick::Faces;
+        e.faces = {*east};
+        modelWrapTextureOnto(*beside);
+        const auto& after = e.edit.mesh();
+        if (after.faces[*beside].texture != after.faces[*east].texture || e.faces != mesh::FaceSet{*beside}) {
+            return fail("wrapping the texture: " + status_);
+        }
+        const auto edge = *mesh::sharedEdge(after, *east, *beside);
+        const auto texel = [&](std::uint32_t f, Vec3 at) {
+            const auto& face = after.faces[f];
+            return mesh::texelsAt(face.uv, mesh::uvAxes(after.normal(face), face.uv.angle), at);
+        };
+        const auto a = texel(*east, after.points[edge.first]), b = texel(*beside, after.points[edge.first]);
+        if (std::abs(a[0] - b[0]) > 1e-6 || std::abs(a[1] - b[1]) > 1e-6) return fail("the wrapped texture does not meet at the edge");
+        log += std::format("wrapped the end wall's texture onto face {} (turned {:g}): they meet at the edge\n", *beside, after.faces[*beside].uv.angle);
+        if (!e.edit.undo()) return fail("undoing the wrap");
+        modelChanged();
+        if (e.edit.mesh().faces[*beside] != before) return fail("undoing the wrap left it changed");
+        e.pick = picked;
+        e.faces = faces;
+    }
 
     // A door through the west wall, lined 32 deep, as the Cuts section makes it.
     {

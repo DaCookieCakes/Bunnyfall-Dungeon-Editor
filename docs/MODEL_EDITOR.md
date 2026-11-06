@@ -56,6 +56,15 @@ space's items are in its **Empty space** submenu). The **Model** panel (where Ed
   the six dungeon sets first (each dungeon's texture table swaps them, as it does classic walls), then the ones
   classic pieces use, most used first, then the rest. Click a picture to lay it on the selected faces. **Texture alignment**: units per texel (classic: 2),
   offset, turn; **Fit** puts one copy across each face, **Classic** lines faces up on the world.
+- **Wrapping a texture** (like Hammer's **Alt+right-click**): pick a face (**3**), then Alt+right-click the next one. It
+  takes the selected face's texture, with the turn, offset and (on shallow slopes) scale worked out so the picture
+  carries on over the edge between them, as if the first face were folded flat onto the second. The clicked face then becomes the
+  selection, so you can keep clicking round a room. A floor carried up a wall is turned to keep running the way it was
+  going, which can read 90 degrees on the wall; round four walls it stays level, with a seam only where the last meets
+  the first (unless the room's perimeter is a whole number of pictures). With several selected, it carries on from the
+  one beside the clicked face. Faces with no edge in common line up where their planes would meet. A slope within about
+  45 degrees of flat is textured from above, so one that also has a turned texture skews it and can only meet exactly at
+  the edge's middle; all other combinations meet along the whole edge. One Ctrl+Z undoes it.
 - The kind (architecture, action door, prop) is the description blocks give it: pieces snap to the classic grid, and
   DOR makes an action door.
 
