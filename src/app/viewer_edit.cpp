@@ -71,6 +71,8 @@ void Viewer::beginEdit(std::size_t sceneBlock) {
 }
 
 void Viewer::endEdit() {
+    typingUndoStep_ = false;
+    saveError_.clear();
     edit_.reset();
     stopPlacing();
     grabbing_ = false;
@@ -110,26 +112,31 @@ void Viewer::editChanged() {
 
 void Viewer::saveEdit() {
     if (!edit_) return;
+    saveError_.clear();
     if (auto* own = project_.block(edit_->name())) {
         own->data = edit_->block();
-        edit_->markSaved();
         markProjectChanged();
         saveProject();
+        if (projectDirty_) {
+            saveError_ = status_;
+            return;
+        }
+        edit_->markSaved();
         return;
     }
     if (!patches_) {
-        status_ = "No patch folder: start the editor with --patches <folder>.";
+        status_ = saveError_ = "No patch folder: start the editor with --patches <folder>.";
         return;
     }
     if (modDir_ && !patchOverride_) {   // the patch lands in the mod's folder: Bunnyfall must know that folder as a mod
         if (auto r = project::ensureModManifest(project_, *modDir_); !r) {
-            status_ = "Not saved: " + r.error().message;
+            status_ = saveError_ = "Not saved: " + r.error().message;
             return;
         }
     }
     auto saved = patches_->save(arena2_.blocks, edit_->bsaIndex(), edit_->block());
     if (!saved) {
-        status_ = "Not saved: " + saved.error().message;
+        status_ = saveError_ = "Not saved: " + saved.error().message;
         return;
     }
     edit_->markSaved();
@@ -265,7 +272,8 @@ void Viewer::placeAt(double x, double y) {
                               *placingModel_, edit_->name());
         return;
     }
-    auto obj = edit::makeEntity(*placing_, 0, 0, 0, sceneryArchive_, sceneryRecord_);
+    const bool person = *placing_ == edit::EntityKind::Person;
+    auto obj = edit::makeEntity(*placing_, 0, 0, 0, person ? personArchive_ : sceneryArchive_, person ? personRecord_ : sceneryRecord_);
     if (*placing_ == edit::EntityKind::FixedEnemy) {
         edit::setFixedEnemyType(std::get<formats::RdbFlat>(obj.resource), enemyType_);
     }
@@ -797,11 +805,36 @@ Result<std::string> Viewer::checkEdit(const std::filesystem::path& patchDir) {
     focusInspectorFrames_ = 8;
     showProperties_ = true;
 
+    // A person, placed and given words: they must reach the saved patch and come back from it.
+    placing_ = edit::EntityKind::Person;
+    placeAt(cx, cy);
+    placing_.reset();
+    const auto personRef = *primary();
+    auto person = *edit_->object({personRef.root, personRef.object});
+    auto& personFlat = std::get<formats::RdbFlat>(person.resource);
+    personFlat.personName = "Check Person";
+    personFlat.personLines = {"First line.", "Second line."};
+    const auto personPosition = person.position;
+    commitObject(personRef, person);
+    setSelection({*pieceRef});
+
     // Save, read back through the same path the viewer opens dungeons with, and compare.
     saveEdit();
     if (edit_->dirty()) return fail("not saved: " + status_);
     auto reloaded = blockSource()(edit_->name());
     if (!reloaded) return fail("reload failed: " + reloaded.error().message);
+    {
+        const formats::RdbFlat* said = nullptr;
+        for (const auto& root : reloaded->roots) {
+            for (const auto& obj : root.objects) {
+                if (obj.position == personPosition) said = obj.flat();
+            }
+        }
+        if (!said || said->personName != "Check Person" || said->personLines.size() != 2) {
+            return fail("a person's words did not come back from the saved patch");
+        }
+        log += "a person's name and lines saved and reloaded\n";
+    }
     if (reloaded->objectCount() != edit_->block().objectCount()) return fail("the saved patch reloads differently");
     if (logic::linksOf(*reloaded).size() != logic::linksOf(edit_->block()).size()) {
         return fail("the saved patch reloads with different links");
@@ -849,6 +882,24 @@ bool Viewer::sceneryPicker(int& archive, int& record) {
     }
     ImGui::SameLine();
     ImGui::TextDisabled("TEXTURE.%03d", archive);
+    return recordGrid(archive, record);
+}
+
+bool Viewer::personPicker(int& archive, int& record) {
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::BeginCombo("Archive", std::format("{}", archive).c_str())) {
+        for (const int a : edit::personArchives()) {
+            if (ImGui::Selectable(std::format("{}", a).c_str(), a == archive)) {
+                archive = a;
+                record = 0;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    return recordGrid(archive, record);
+}
+
+bool Viewer::recordGrid(int archive, int& record) {
     const int records = static_cast<int>(textures_.recordCount(archive));
     if (records == 0) {
         ImGui::TextDisabled("No pictures in this archive.");
@@ -917,9 +968,18 @@ void Viewer::drawEditPanel() {
     } else if (users == 1) {
         ImGui::TextDisabled("Used by 1 dungeon.");
     }
-    if (edit_->dirty()) ImGui::TextColored({1.0f, 0.6f, 0.4f, 1.0f}, "Unsaved changes");
-    else if (edit_->differsFromClassic()) ImGui::TextDisabled("Saved");
-    else ImGui::TextDisabled("Same as the original");
+    if (edit_->dirty()) {
+        ImGui::TextColored({1.0f, 0.6f, 0.4f, 1.0f}, "Unsaved changes");
+        if (!saveError_.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0f, 0.45f, 0.4f, 1.0f});
+            ImGui::TextWrapped("%s", saveError_.c_str());
+            ImGui::PopStyleColor();
+        }
+    } else if (edit_->differsFromClassic()) {
+        ImGui::TextDisabled("Saved");
+    } else {
+        ImGui::TextDisabled("Same as the original");
+    }
 
     ImGui::BeginDisabled(!edit_->dirty());
     if (ImGui::Button("Save")) saveEdit();
@@ -961,13 +1021,16 @@ void Viewer::drawEditPanel() {
     for (const auto& info : edit::entityKinds()) {
         ImGui::PushID(static_cast<int>(info.kind));
         if (info.markerRecord >= 0) textureImage(textures_.get(edit::kEditorFlatArchive, info.markerRecord), 24);
+        else if (info.kind == edit::EntityKind::Person) textureImage(textures_.get(personArchive_, personRecord_), 24);
         else if (info.kind == edit::EntityKind::Scenery) textureImage(textures_.get(sceneryArchive_, sceneryRecord_), 24);
         else ImGui::Dummy({24, 24});
         ImGui::SameLine();
         const bool armed = placing_ == info.kind;
-        const bool asks = info.kind == edit::EntityKind::FixedEnemy || info.kind == edit::EntityKind::Scenery;
+        const bool asks = info.kind == edit::EntityKind::FixedEnemy || info.kind == edit::EntityKind::Person ||
+                          info.kind == edit::EntityKind::Scenery;
         std::string label(info.name);
         if (info.kind == edit::EntityKind::FixedEnemy) label += std::format(": {}", edit::enemyName(enemyType_));
+        if (info.kind == edit::EntityKind::Person) label += std::format(": {}/{}", personArchive_, personRecord_);
         if (info.kind == edit::EntityKind::Scenery) label += std::format(": {}/{}", sceneryArchive_, sceneryRecord_);
         auto arm = [&] {
             if (grabbing_) endGrab(false);
@@ -983,6 +1046,7 @@ void Viewer::drawEditPanel() {
         if (asks) ImGui::SetItemTooltip("Click to choose which, then click in a view to place it.");
         if (ImGui::BeginPopup("kind")) {
             const bool picked = info.kind == edit::EntityKind::FixedEnemy ? enemyPicker(enemyType_)
+                                : info.kind == edit::EntityKind::Person   ? personPicker(personArchive_, personRecord_)
                                                                           : sceneryPicker(sceneryArchive_, sceneryRecord_);
             if (picked) {
                 arm();
@@ -1064,6 +1128,61 @@ void Viewer::drawConfirmations() {
     }
 }
 
+void Viewer::endTyping() {
+    if (typingUndoStep_ && edit_) edit_->endGesture();
+    typingUndoStep_ = false;
+}
+
+bool Viewer::drawPersonWords(formats::RdbFlat& flat) {
+    // A text box typed in is one undo step, as a drag is. The next box's activation and this one's end come on different
+    // frames, and a click on another object leaves no box to report the end at all, so drawUi closes the step.
+    const auto typed = [&](const char* label, std::string& text, std::size_t maxChars) {
+        std::array<char, 1024> buffer{};   // 240 characters of up to 4 bytes each, with room to spare
+        std::copy_n(text.begin(), std::min(text.size(), buffer.size() - 1), buffer.begin());
+        const bool edited = ImGui::InputText(label, buffer.data(), buffer.size());
+        if (ImGui::IsItemActivated()) {
+            endTyping();
+            edit_->beginGesture();
+            typingUndoStep_ = true;
+        }
+        if (ImGui::IsItemActive()) typingFrame_ = ImGui::GetFrameCount();
+        if (edited) text = edit::clampText(buffer.data(), maxChars);
+        return edited;
+    };
+
+    bool changed = false;
+    ImGui::SeparatorText("Talk");
+    changed = typed("Name", flat.personName, edit::kPersonNameMax) || changed;
+    ImGui::SetItemTooltip("What they are called when looked at and talked to. Empty: the game names them.");
+    std::optional<std::size_t> removeLine;
+    for (std::size_t i = 0; i < flat.personLines.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::SmallButton("x")) removeLine = i;
+        ImGui::SetItemTooltip("Remove this line");
+        ImGui::SameLine();
+        changed = typed(std::format("Line {}", i + 1).c_str(), flat.personLines[i], edit::kPersonLineMax) || changed;
+        ImGui::PopID();
+    }
+    if (removeLine) {
+        flat.personLines.erase(flat.personLines.begin() + static_cast<std::ptrdiff_t>(*removeLine));
+        changed = true;
+    }
+    ImGui::BeginDisabled(flat.personLines.size() >= edit::kPersonLinesMax);
+    if (ImGui::Button("Add line")) {
+        flat.personLines.emplace_back();
+        changed = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu of %zu", flat.personLines.size(), edit::kPersonLinesMax);
+    ImGui::TextDisabled(flat.personLines.empty() ? "No lines: they talk as Daggerfall's people do."
+                                                 : "Each Talk says the next line, looping.");
+    if (!flat.personLines.empty() && (flat.action == logic::action::kShowText || flat.action == logic::action::kShowTextWithInput)) {
+        ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "Their Show Text action runs instead:\nthese lines are never said.");
+    }
+    return changed;
+}
+
 void Viewer::drawEditInspector(edit::ObjectSlot slot) {
     const auto* current = edit_->object(slot);
     if (!current) return;
@@ -1087,7 +1206,10 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
         obj.z = xyz[2];
         changed = true;
     }
-    if (ImGui::IsItemActivated()) edit_->beginGesture();
+    if (ImGui::IsItemActivated()) {
+        endTyping();
+        edit_->beginGesture();
+    }
     const bool positionDone = ImGui::IsItemDeactivated();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("File units (40 = 1 m). Y points down: smaller is higher.");
 
@@ -1148,6 +1270,25 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
                 changed = true;
             }
             ImGui::TextDisabled("Bunnyfall may swap an enemy too strong for the party.");
+        }
+        if (kind == edit::EntityKind::Person) {
+            if (ImGui::ImageButton("picture", textureRef(textures_.get(f->textureArchive(), f->textureRecord())), {64, 64})) {
+                pickArchive_ = f->textureArchive();
+                pickRecord_ = f->textureRecord();
+                ImGui::OpenPopup("person");
+            }
+            ImGui::SetItemTooltip("Click to choose another picture");
+            ImGui::SameLine();
+            ImGui::Text("Person %d/%d", f->textureArchive(), f->textureRecord());
+            if (ImGui::BeginPopup("person")) {
+                if (personPicker(pickArchive_, pickRecord_)) {
+                    edit::setFlatTexture(*f, pickArchive_, pickRecord_);
+                    changed = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+            changed = drawPersonWords(*f) || changed;
         }
         if (kind == edit::EntityKind::Scenery) {
             int archive = f->textureArchive(), record = f->textureRecord();

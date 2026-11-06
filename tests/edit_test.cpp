@@ -54,6 +54,23 @@ TEST_CASE("entities: markers by kind, and what an object is read back as") {
     CHECK(makeEntity(EntityKind::Light, 0, 0, 0).light()->radius > 0);
 }
 
+TEST_CASE("entities: a flat from a people archive is a person") {
+    CHECK(kindOf(makeEntity(EntityKind::Scenery, 0, 0, 0, 357, 3)) == EntityKind::Person);
+    CHECK(kindOf(makeEntity(EntityKind::Scenery, 0, 0, 0, 210, 3)) == EntityKind::Scenery);
+    const auto chosen = makeEntity(EntityKind::Person, 0, 0, 0, 184, 2);
+    CHECK(chosen.flat()->textureArchive() == 184);
+    CHECK(chosen.flat()->textureRecord() == 2);
+    CHECK(isPersonArchive(makeEntity(EntityKind::Person, 0, 0, 0, 210, 3).flat()->textureArchive()));
+}
+
+TEST_CASE("entities: text is cut by characters, never through one") {
+    CHECK(clampText("abc", 5) == "abc");
+    CHECK(clampText("abcdef", 3) == "abc");
+    CHECK(clampText("h\xc3\xa9llo", 2) == "h\xc3\xa9");
+    CHECK(clampText("", 0).empty());
+    CHECK(clampText("a", 0).empty());
+}
+
 TEST_CASE("entities: enemy fields as Daggerfall reads them") {
     auto flat = *makeEntity(EntityKind::FixedEnemy, 0, 0, 0).flat();
     setFixedEnemyType(flat, 32);
@@ -128,6 +145,40 @@ TEST_CASE("block edit: add, replace, remove, undo and redo") {
     REQUIRE(edit.undo());
     CHECK_FALSE(edit.canUndo());
     CHECK_FALSE(edit.differsFromClassic());
+}
+
+TEST_CASE("block edit: a person's words are a change, one undo step of typing") {
+    de::formats::RdbBlock classic;
+    classic.roots.emplace_back();
+    BlockEdit edit("N0000000.RDB", 0, 0, classic, classic);
+    const auto slot = edit.add(makeEntity(EntityKind::Person, 0, 0, 0, 182, 1));
+    const auto saved = edit.block();
+    auto typedInto = [&](const std::string& name) {
+        auto obj = *edit.object(slot);
+        std::get<de::formats::RdbFlat>(obj.resource).personName = name;
+        edit.replace(slot, std::move(obj));
+    };
+    edit.beginGesture();
+    typedInto("O");
+    typedInto("Ol");
+    typedInto("Old");
+    edit.endGesture();
+    CHECK(edit.object(slot)->flat()->personName == "Old");
+    edit.undo();
+    CHECK(edit.object(slot)->flat()->personName.empty());
+    CHECK(edit.block().objectCount() == saved.objectCount());
+    edit.redo();
+
+    auto obj = *edit.object(slot);
+    std::get<de::formats::RdbFlat>(obj.resource).personName.clear();
+    std::get<de::formats::RdbFlat>(obj.resource).personLines = {"Hello."};
+    edit.replace(slot, std::move(obj));
+    edit.undo();
+    CHECK(edit.object(slot)->flat()->personLines.empty());
+
+    const auto copy = edit.duplicate(slot);
+    REQUIRE(copy);
+    CHECK(edit.object(*copy)->flat()->personName == "Old");
 }
 
 TEST_CASE("block edit: new objects never share a save identity") {

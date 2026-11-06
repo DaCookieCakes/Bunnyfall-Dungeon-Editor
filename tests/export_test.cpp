@@ -77,6 +77,44 @@ TEST_CASE("patch ops") {
     }
 }
 
+TEST_CASE("a person's name and lines ride the block's JSON, and only when there are some") {
+    de::formats::RdbBlock block;
+    block.roots.emplace_back();
+    de::formats::RdbObject obj;
+    obj.type = de::formats::RdbObjectType::Flat;
+    de::formats::RdbFlat flat;
+    flat.textureBitfield = static_cast<std::uint16_t>((182 << 7) | 3);
+    flat.nextObjectOffset = -1;
+    obj.resource = flat;
+    block.roots[0].objects.push_back(obj);
+    const auto resourceOf = [](const Json& json) { return json["RdbBlock"]["ObjectRootList"][0]["RdbObjects"][0]["Resources"]["FlatResource"]; };
+
+    CHECK_FALSE(resourceOf(rdbBlockToJson(block, "NBF00001.RDB", 0, 0)).contains("BunnyfallPerson"));
+
+    flat.personLines = {"   ", ""};   // rows not filled in yet say nothing
+    block.roots[0].objects[0].resource = flat;
+    CHECK_FALSE(resourceOf(rdbBlockToJson(block, "NBF00001.RDB", 0, 0)).contains("BunnyfallPerson"));
+
+    flat.personName = "Old Marta";
+    flat.personLines = {"Mind the third step.", "  ", "The door sticks."};
+    block.roots[0].objects[0].resource = flat;
+    const auto json = rdbBlockToJson(block, "NBF00001.RDB", 0, 0);
+    const auto person = resourceOf(json)["BunnyfallPerson"];
+    CHECK(person["Name"] == "Old Marta");
+    CHECK(person["Lines"].size() == 2);
+
+    auto back = rdbBlockFromJson(json);
+    REQUIRE_MESSAGE(back, (back ? "" : back.error().message));
+    const auto* read = back->roots[0].objects[0].flat();
+    REQUIRE(read);
+    CHECK(read->personName == "Old Marta");
+    CHECK(read->personLines == std::vector<std::string>{"Mind the third step.", "The door sticks."});
+
+    Json bad = json;
+    bad["RdbBlock"]["ObjectRootList"][0]["RdbObjects"][0]["Resources"]["FlatResource"]["BunnyfallPerson"]["Lines"] = {1};
+    CHECK_FALSE(rdbBlockFromJson(bad));
+}
+
 TEST_CASE("ARENA2: the classic repairs land where Daggerfall Unity puts them") {
     DE_REQUIRE_ARENA2(a);
     auto n71 = de::formats::readClassicRdbBlock(a->blocks, 994);
@@ -183,7 +221,8 @@ TEST_CASE("ARENA2: an unedited block makes an empty patch; edits make patches th
     flat["Type"] = "Flat";
     flat["Resources"] = {{"FlatResource", {{"Position", 0}, {"TextureArchive", 210}, {"TextureRecord", 0},
                                            {"Flags", 0}, {"Magnitude", 0}, {"SoundIndex", 0},
-                                           {"FactionOrMobileId", 0}, {"NextObjectOffset", -1}, {"Action", 0}}}};
+                                           {"FactionOrMobileId", 0}, {"NextObjectOffset", -1}, {"Action", 0},
+                                           {"BunnyfallPerson", {{"Name", "Old Marta"}, {"Lines", {"Mind the step."}}}}}}};
     objects.push_back(flat);
     edited["Name"] = "N9000071.RDB";
     auto patch = makeBlockPatch(a->blocks, 994, edited, "N9000071.RDB.json");

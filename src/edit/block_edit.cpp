@@ -33,6 +33,7 @@ bool sameBlock(const formats::RdbBlock& a, const formats::RdbBlock& b) {
                 const auto* fb = ob.flat();
                 if (fa->textureBitfield != fb->textureBitfield || fa->flags != fb->flags || fa->magnitude != fb->magnitude ||
                     fa->soundIndex != fb->soundIndex || fa->action != fb->action || fa->nextObjectOffset != fb->nextObjectOffset ||
+                    fa->personName != fb->personName || fa->personLines != fb->personLines ||
                     fa->position != fb->position) {
                     return false;
                 }

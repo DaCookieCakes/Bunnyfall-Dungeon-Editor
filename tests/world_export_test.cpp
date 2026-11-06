@@ -195,6 +195,24 @@ TEST_CASE("ARENA2: a project exports its blocks and places, and a re-export tidi
     CHECK(std::filesystem::exists(dir.path / "WorldDataPatches" / "S0000999.RDB.json"));
 }
 
+TEST_CASE("a mod folder left with only empty folders is still the editor's to save into") {
+    TempDir dir;
+    const auto mod = dir.path / "vendor" / "my-mod";
+    std::filesystem::create_directories(mod / "Models");
+    std::filesystem::create_directories(mod / "WorldDataPatches");
+    Project p;
+    auto saved = ensureModManifest(p, mod);
+    REQUIRE_MESSAGE(saved, (saved ? "" : saved.error().message));
+    CHECK(std::filesystem::exists(mod / std::string(kModManifestName)));
+
+    // Files it did not write still keep it out, whichever folder they are in.
+    const auto other = dir.path / "vendor" / "another-mod";
+    std::filesystem::create_directories(other / "Models");
+    std::ofstream(other / "Models" / "theirs.json") << "{}";
+    CHECK_FALSE(ensureModManifest(p, other));
+    CHECK_FALSE(std::filesystem::exists(other / std::string(kModManifestName)));
+}
+
 TEST_CASE("ARENA2: a project with errors writes nothing") {
     DE_REQUIRE_ARENA2(a);
     Fixture f(*a);

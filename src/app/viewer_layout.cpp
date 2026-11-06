@@ -115,6 +115,7 @@ void Viewer::drawUi() {
     if (modelling()) drawModelEditorPanel();
     if (showProject_) drawProjectPanel();
     drawConfirmations();
+    if (typingUndoStep_ && typingFrame_ != ImGui::GetFrameCount()) endTyping();
     if (config_) drawPathsWindow(window_, *config_, &pathsOpen_);
 
     if (keysOpen_) {

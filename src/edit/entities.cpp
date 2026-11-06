@@ -7,7 +7,7 @@ namespace de::edit {
 
 namespace {
 
-constexpr std::array<EntityInfo, 9> kKinds = {{
+constexpr std::array<EntityInfo, 10> kKinds = {{
     {EntityKind::RandomEnemy, "Random enemy", 15},
     {EntityKind::FixedEnemy, "Fixed enemy", 16},
     {EntityKind::Treasure, "Treasure", 19},
@@ -15,6 +15,7 @@ constexpr std::array<EntityInfo, 9> kKinds = {{
     {EntityKind::QuestItem, "Quest item", 18},
     {EntityKind::EnterMarker, "Enter marker", 8},
     {EntityKind::StartMarker, "Start marker", 10},
+    {EntityKind::Person, "Person", -1},
     {EntityKind::Scenery, "Scenery", -1},
     {EntityKind::Light, "Light", -1},
 }};
@@ -33,6 +34,8 @@ constexpr std::array<EnemyType, 59> kEnemies = {{
     {140, "Monk"}, {141, "Archer"}, {142, "Ranger"}, {143, "Barbarian"}, {144, "Warrior"}, {145, "Knight"},
 }};
 
+constexpr std::array<int, 13> kPersonArchives = {175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 334, 346, 357};
+
 constexpr std::uint16_t kFemaleFlag = 1;
 constexpr std::uint16_t kMaleFlag = 2;
 constexpr std::uint16_t kDefaultLightRadius = 100;   // the commonest classic radius
@@ -40,6 +43,21 @@ constexpr std::uint16_t kDefaultLightRadius = 100;   // the commonest classic ra
 } // namespace
 
 std::span<const EntityInfo> entityKinds() { return kKinds; }
+
+std::span<const int> personArchives() { return kPersonArchives; }
+bool isPersonArchive(int archive) { return std::ranges::contains(kPersonArchives, archive); }
+
+std::string clampText(std::string text, std::size_t maxChars) {
+    std::size_t chars = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if ((static_cast<unsigned char>(text[i]) & 0xC0) == 0x80) continue;   // inside a character
+        if (chars++ == maxChars) {
+            text.resize(i);
+            break;
+        }
+    }
+    return text;
+}
 
 const EntityInfo& entityInfo(EntityKind kind) {
     return *std::ranges::find(kKinds, kind, &EntityInfo::kind);
@@ -52,6 +70,7 @@ EntityKind kindOf(const formats::RdbObject& obj) {
             if (k.markerRecord == f->textureRecord()) return k.kind;
         }
     }
+    if (const auto* f = obj.flat(); f && isPersonArchive(f->textureArchive())) return EntityKind::Person;
     return EntityKind::Scenery;
 }
 
@@ -70,6 +89,7 @@ formats::RdbObject makeEntity(EntityKind kind, std::int32_t x, std::int32_t y, s
     flat.nextObjectOffset = -1;   // no action chain
     const auto& info = entityInfo(kind);
     if (info.markerRecord >= 0) setFlatTexture(flat, kEditorFlatArchive, info.markerRecord);
+    else if (kind == EntityKind::Person && !isPersonArchive(sceneryArchive)) setFlatTexture(flat, 182, 0);
     else setFlatTexture(flat, sceneryArchive, sceneryRecord);
     obj.type = formats::RdbObjectType::Flat;
     obj.resource = flat;

@@ -110,6 +110,7 @@ void Viewer::drawOutliner() {
             } else if (const auto* f = obj.flat()) {
                 label = f->textureArchive() == edit::kEditorFlatArchive
                             ? std::string(catalog::markerName(f->textureRecord()))
+                        : !f->personName.empty() ? f->personName
                             : std::format("flat {}/{}", f->textureArchive(), f->textureRecord());
             } else if (const auto* l = obj.light()) {
                 label = std::format("light r{}", l->radius);

@@ -25,9 +25,16 @@ view under the pointer fill the area and back again.
 Select anything in a block and press **Edit this block** in Properties (or open a block from the Blocks tab and
 press **Edit** in the Edit panel). Then:
 
-- **Place:** pick an entry in the Edit panel's palette (enemies, treasure, quest markers, enter/start markers, scenery,
-  lights) and click a floor, wall or ceiling. **Fixed enemy** and **Scenery** first pop up a picker (an enemy list
+- **Place:** pick an entry in the Edit panel's palette (enemies, treasure, quest markers, enter/start markers, people,
+  scenery, lights) and click a floor, wall or ceiling. **Fixed enemy**, **Person** and **Scenery** first pop up a picker (an enemy list
   with a filter, a picture grid). It stays armed for the next click; right-click or Esc stops.
+- **People:** **Person** in the palette places a flat from one of the game's people archives (a picture grid, as for
+  scenery). The game makes any such flat someone to talk to. In Properties (General), **Talk** gives them a **Name** and
+  up to 8 lines of up to 240 characters: each press of Talk says the next line, then starts over, as a person in
+  Bunnyfall's POI editor does. There are no answers to choose from. No lines means they talk as Daggerfall's people do;
+  no name means the game names them. This works on classic people in a block you edit too, but a quest's person speaks
+  for the quest first, and a Show Text action on them runs instead (Properties warns). The words need change 7 in
+  [BUNNYFALL_CHANGES.md](BUNNYFALL_CHANGES.md); Daggerfall Unity should ignore them and use its normal talk window.
 - **Select** with a left-click; double-click for Properties, whose General tab edits what it is (position, enemy
   type, gender, passive, slot, scenery picture, light radius; models turn in 90-degree steps).
 - **Several at once:** Shift+click adds, Ctrl+click toggles, a left-drag on empty space draws a box (Shift/Ctrl

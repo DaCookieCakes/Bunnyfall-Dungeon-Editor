@@ -403,13 +403,17 @@ namespace {
 
 /// A vendor folder that holds files the editor did not write. A folder of nothing but WorldDataPatches/ is the editor's
 /// all the same: every other mod ships a .dfmod.json or a README beside its patches, and saving a classic block before
-/// the first export (in versions that did not write the manifest then) leaves exactly that.
+/// the first export (in versions that did not write the manifest then) leaves exactly that. So is one left with only
+/// empty folders, as clearing out an exported mod does: nothing in it is anyone's.
 bool someoneElsesModFolder(const std::filesystem::path& modDir) {
     std::error_code ec;
     if (!inVendor(modDir) || !std::filesystem::is_directory(modDir, ec) || modDir.filename() == "bunnyfall-dungeons") return false;
     if (std::filesystem::exists(modDir / kManifest) || std::filesystem::exists(modDir / kModManifestName)) return false;
     for (const auto& entry : std::filesystem::directory_iterator(modDir, ec)) {
-        if (entry.path().filename() != "WorldDataPatches") return true;
+        if (entry.path().filename() == "WorldDataPatches") continue;
+        std::error_code emptyEc;
+        if (entry.is_directory(emptyEc) && std::filesystem::is_empty(entry.path(), emptyEc)) continue;
+        return true;
     }
     return false;
 }

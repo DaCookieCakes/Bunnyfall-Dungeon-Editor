@@ -6,6 +6,7 @@
 #include "formats/rdb.h"
 
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace de::edit {
@@ -20,7 +21,8 @@ enum class EntityKind {
     QuestItem,      ///< 199/18: where a quest may put an item.
     EnterMarker,    ///< 199/8: where a start inside the dungeon puts the player.
     StartMarker,    ///< 199/10: where a player walking in arrives.
-    Scenery,        ///< Any other flat: torches, bones, furniture, people.
+    Person,         ///< A flat from a people archive: the game makes it someone to talk to.
+    Scenery,        ///< Any other flat: torches, bones, furniture.
     Light,          ///< A point light.
 };
 
@@ -30,6 +32,15 @@ struct EntityInfo {
     int markerRecord;   ///< The 199 record for markers, -1 otherwise.
 };
 
+/// The texture archives whose flats are people (Bunnyfall's NPC_FLAT_ARCHIVES, Daggerfall's RDBLayout.NPCFlatArchives).
+std::span<const int> personArchives();
+bool isPersonArchive(int archive);
+
+/// How much a person may say: the limits Bunnyfall's POI people have (src/poi/poiLaw.js POI_LIMITS).
+inline constexpr std::size_t kPersonNameMax = 48, kPersonLineMax = 240, kPersonLinesMax = 8;
+/// `text` cut to at most `maxChars` characters, never through the middle of one.
+std::string clampText(std::string text, std::size_t maxChars);
+
 /// Every kind, in palette order.
 std::span<const EntityInfo> entityKinds();
 const EntityInfo& entityInfo(EntityKind kind);
@@ -38,7 +49,7 @@ const EntityInfo& entityInfo(EntityKind kind);
 EntityKind kindOf(const formats::RdbObject& obj);
 
 /// A new object of a kind at a file position, with every field at the value Daggerfall expects for it. `position`
-/// is left 0: the block edit gives each new object its own.
+/// is left 0: the block edit gives each new object its own. A Person given an archive of no people takes archive 182.
 formats::RdbObject makeEntity(EntityKind kind, std::int32_t x, std::int32_t y, std::int32_t z, int sceneryArchive = 210,
                               int sceneryRecord = 0);
 

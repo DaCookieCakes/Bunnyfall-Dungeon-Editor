@@ -299,6 +299,12 @@ private:
     /// Pickers shared by the Place list and Properties; true when something was picked (then close the popup).
     bool enemyPicker(int& type);
     bool sceneryPicker(int& archive, int& record);
+    bool personPicker(int& archive, int& record);
+    bool recordGrid(int archive, int& record);
+    /// The name and lines of a person, in Properties. True when they changed.
+    bool drawPersonWords(formats::RdbFlat& flat);
+    /// Closes the undo step of a text box being typed in.
+    void endTyping();
     /// Opens Properties floating beside `at` (a double-click), or brings it to the front where it is docked.
     void openProperties(ImVec2 at);
     void drawConfirmations();
@@ -733,6 +739,10 @@ private:
     char outlinerFilter_[48] = {};
     int outlinerKind_ = -1;                      // a Category, or -1 for all              // the palette lists variants no classic block uses
     int sceneryArchive_ = 210, sceneryRecord_ = 0;
+    int personArchive_ = 182, personRecord_ = 0;
+    std::string saveError_;   ///< Why the last block save failed; shown in the Edit panel while the block is unsaved.
+    bool typingUndoStep_ = false;
+    int typingFrame_ = -1;
     int enemyType_ = 7;                          // Orc
     int snap_ = 16;                              // file units; 1 = off
     bool grabbing_ = false;

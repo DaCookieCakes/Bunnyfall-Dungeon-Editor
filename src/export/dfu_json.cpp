@@ -35,7 +35,7 @@ Json modelResourceJson(const formats::RdbModel& m) {
 }
 
 Json flatResourceJson(const formats::RdbFlat& f) {
-    return {
+    Json json = {
         {"Position", f.position},
         {"TextureArchive", f.textureArchive()},
         {"TextureRecord", f.textureRecord()},
@@ -46,6 +46,13 @@ Json flatResourceJson(const formats::RdbFlat& f) {
         {"NextObjectOffset", f.nextObjectOffset},
         {"Action", f.action},
     };
+    // Blank lines are rows still being typed, not words. A flat with nothing said keeps the classic shape exactly.
+    Json lines = Json::array();
+    for (const auto& line : f.personLines) {
+        if (line.find_first_not_of(" \t") != std::string::npos) lines.push_back(line);
+    }
+    if (!f.personName.empty() || !lines.empty()) json["BunnyfallPerson"] = {{"Name", f.personName}, {"Lines", std::move(lines)}};
+    return json;
 }
 
 Json objectJson(const formats::RdbObject& o) {
@@ -215,6 +222,18 @@ Result<formats::RdbObject> objectFromJson(const Json& o, const std::string& wher
         flat.action = action;
         if (flat.factionOrMobileId() != mobile) {
             return fail(w + ": FactionOrMobileId " + std::to_string(mobile) + " is not Magnitude and SoundIndex");
+        }
+        if (const auto person = f.find("BunnyfallPerson"); person != f.end()) {
+            const auto name = person->find("Name");
+            const auto lines = person->find("Lines");
+            if (!person->is_object() || name == person->end() || !name->is_string() || lines == person->end() || !lines->is_array()) {
+                return fail(w + ": BunnyfallPerson needs a Name and Lines");
+            }
+            flat.personName = name->get<std::string>();
+            for (const auto& line : *lines) {
+                if (!line.is_string()) return fail(w + ": a BunnyfallPerson line is not text");
+                flat.personLines.push_back(line.get<std::string>());
+            }
         }
         obj.type = formats::RdbObjectType::Flat;
         obj.resource = flat;

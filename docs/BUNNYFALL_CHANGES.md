@@ -85,6 +85,29 @@ files, `npx vite build` passes, and under Node `readEditorMods` accepts a good m
 and `bunnyfall-dungeons`. Not yet seen in the game with a second mod. Needs `node tools/l10nExtract.mjs` for the new
 string before the PR. Backups: `bunnyfall-backups/2026-11-05/` at the workspace root.
 
+### 7. A dungeon person's own name and lines (2026-11-06)
+
+The editor gives a person flat a name and lines, like the POI editor's people (`scenes/poiNpcs.js`, added upstream
+2026-11-05): each press of Talk says the next line, round and round, with the same limits (48 / 8 / 240). POI people live
+in server-stored POI documents on the overworld and dungeons never read those, so the words travel on the flat instead:
+`FlatResource.BunnyfallPerson: { Name, Lines }` in the block's world-data JSON.
+
+| File | Change |
+|---|---|
+| `src/world/editorPeople.js` (new) | `editorPersonOf` checks and limits the field; `nextPersonLine` gives the next line. |
+| `src/formats/worldData/worldDataReplacement.js` | `rdbResourcesFromJson` keeps the field on the flat resource as `editorPerson`. |
+| `src/world/rdbLayout.js` | A person flat's layout entry carries it, checked. |
+| `src/scenes/dungeonContext.js` | The dungeon's person record (`pn.editorPerson`) carries it. |
+| `src/scenes/worldModes.js` | `officeName` answers with the name (hover, Info, talk window). `activateStaticNpc` says the next line (`editorPersonSays`) instead of opening the talk window. A person with a quest behaviour, or no lines, goes on as before. |
+
+No new strings, so nothing for `l10nExtract`. World-data patches carry the field untouched (generic JSON diff, canonical
+sha256). The standalone `?dungeon` scene has its own NPC path and is not changed.
+
+Checked: `npx eslint` clean on the five files, `npx vite build` passes, and under Node a patch the editor saved rebuilds
+over the real BLOCKS.BSA with a matching sha256, lays out with the person's words, and the lines cycle. Not yet seen in
+the game. That DFU ignores the field is from how its JSON reader is known to work, not tried. Not in a PR yet: uncommitted
+on the `dungeons` branch of the GitHub checkout.
+
 ## Still to make
 
 ### 5. An explicit texture table per dungeon (planned)
