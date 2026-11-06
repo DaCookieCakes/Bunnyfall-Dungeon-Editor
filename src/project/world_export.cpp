@@ -399,6 +399,33 @@ std::optional<int> freeIdRange(const std::filesystem::path& vendorDir, std::stri
     return std::nullopt;
 }
 
+namespace {
+
+/// A vendor folder that holds files the editor did not write. A folder of nothing but WorldDataPatches/ is the editor's
+/// all the same: every other mod ships a .dfmod.json or a README beside its patches, and saving a classic block before
+/// the first export (in versions that did not write the manifest then) leaves exactly that.
+bool someoneElsesModFolder(const std::filesystem::path& modDir) {
+    std::error_code ec;
+    if (!inVendor(modDir) || !std::filesystem::is_directory(modDir, ec) || modDir.filename() == "bunnyfall-dungeons") return false;
+    if (std::filesystem::exists(modDir / kManifest) || std::filesystem::exists(modDir / kModManifestName)) return false;
+    for (const auto& entry : std::filesystem::directory_iterator(modDir, ec)) {
+        if (entry.path().filename() != "WorldDataPatches") return true;
+    }
+    return false;
+}
+
+std::string someoneElsesMessage(const std::filesystem::path& modDir) {
+    return std::format("{} holds files the editor did not write (another mod?): give the mod another folder.", modDir.string());
+}
+
+} // namespace
+
+Result<void> ensureModManifest(const Project& project, const std::filesystem::path& modDir) {
+    if (std::filesystem::exists(modDir / kModManifestName)) return {};
+    if (someoneElsesModFolder(modDir)) return fail(someoneElsesMessage(modDir));
+    return writeJsonFile(modDir / kModManifestName, modManifestJson(project));
+}
+
 std::vector<Issue> checkModFolder(const Project& project, const std::filesystem::path& modDir) {
     std::vector<Issue> issues;
     const std::string where = "Mod";
@@ -407,12 +434,8 @@ std::vector<Issue> checkModFolder(const Project& project, const std::filesystem:
         if (const auto problem = modFolderProblem(folder)) issues.push_back({Issue::Severity::Error, where, *problem + "."});
     }
     // Never write into a mod the editor did not make.
-    std::error_code ec;
-    const bool ours = std::filesystem::exists(modDir / kManifest) || std::filesystem::exists(modDir / kModManifestName);
-    if (!ours && inVendor(modDir) && std::filesystem::exists(modDir, ec) && !std::filesystem::is_empty(modDir, ec) && folder != "bunnyfall-dungeons") {
-        issues.push_back({Issue::Severity::Error, where,
-                          std::format("{} holds files the editor did not write (another mod?): give the mod another folder.",
-                                      modDir.string())});
+    if (someoneElsesModFolder(modDir)) {
+        issues.push_back({Issue::Severity::Error, where, someoneElsesMessage(modDir)});
     }
     if (!inVendor(modDir)) return issues;
 

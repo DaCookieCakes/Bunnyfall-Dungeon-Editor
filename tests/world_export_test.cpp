@@ -210,6 +210,45 @@ TEST_CASE("ARENA2: a project with errors writes nothing") {
     CHECK_FALSE(std::filesystem::exists(dir.path));
 }
 
+TEST_CASE("mod folders: a classic block saved before the first export still makes a mod") {
+    TempDir dir;
+    const auto vendor = dir.path / "vendor";
+    Project p;
+    p.name = "Dungeons PR";
+    p.mod.folder = "dungeons-pr";
+
+    // A patch saved with no manifest beside it, as the editor once left them: the export must not call it another mod's.
+    const auto orphan = vendor / "dungeons-pr";
+    std::filesystem::create_directories(orphan / "WorldDataPatches");
+    std::ofstream(orphan / "WorldDataPatches" / "S0000999.RDB.json") << "{}";
+    CHECK(checkModFolder(p, orphan).empty());
+    REQUIRE(ensureModManifest(p, orphan));
+    {
+        std::ifstream in(orphan / std::string(kModManifestName));
+        REQUIRE(in);
+        const auto manifest = de::exporter::Json::parse(in);
+        CHECK(manifest["format"] == kModManifestFormat);
+        CHECK(manifest["title"] == "Dungeons PR");
+    }
+
+    // A folder that does not exist yet is made; a manifest already there is left alone.
+    REQUIRE(ensureModManifest(p, vendor / "fresh"));
+    CHECK(std::filesystem::exists(vendor / "fresh" / std::string(kModManifestName)));
+    std::ofstream(vendor / "fresh" / std::string(kModManifestName)) << "{\"kept\":true}";
+    REQUIRE(ensureModManifest(p, vendor / "fresh"));
+    {
+        std::ifstream in(vendor / "fresh" / std::string(kModManifestName));
+        CHECK(de::exporter::Json::parse(in).contains("kept"));
+    }
+
+    // Another mod's patches, with its own files beside them, are never written into.
+    const auto other = vendor / "aquatic-sprites";
+    std::filesystem::create_directories(other / "WorldDataPatches");
+    std::ofstream(other / "aquatic-sprites.dfmod.json") << "{}";
+    CHECK_FALSE(ensureModManifest(p, other));
+    CHECK_FALSE(std::filesystem::exists(other / std::string(kModManifestName)));
+}
+
 TEST_CASE("mod folders: another mod's folder, a shared id range and a shared block are found") {
     TempDir dir;
     const auto vendor = dir.path / "vendor";

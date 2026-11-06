@@ -121,6 +121,12 @@ void Viewer::saveEdit() {
         status_ = "No patch folder: start the editor with --patches <folder>.";
         return;
     }
+    if (modDir_ && !patchOverride_) {   // the patch lands in the mod's folder: Bunnyfall must know that folder as a mod
+        if (auto r = project::ensureModManifest(project_, *modDir_); !r) {
+            status_ = "Not saved: " + r.error().message;
+            return;
+        }
+    }
     auto saved = patches_->save(arena2_.blocks, edit_->bsaIndex(), edit_->block());
     if (!saved) {
         status_ = "Not saved: " + saved.error().message;

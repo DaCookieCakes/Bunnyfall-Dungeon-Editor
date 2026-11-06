@@ -32,7 +32,8 @@ A project exports as a mod of its own: a folder of Bunnyfall's `vendor/`, set in
   dungeon or model the range is fixed. The tab lists the other editor mods in `vendor/` and their ranges.
 
 The export writes `dungeon-editor.mod.json` (the title, author, description and range) and a `README.md` (unless the
-folder has one of its own) beside the world data. Bunnyfall gives every folder with that manifest a switch, a
+folder has one of its own) beside the world data. Saving an edited classic block writes the manifest too if there is
+none yet, but only the export writes your models, so export before testing a block that uses one. Bunnyfall gives every folder with that manifest a switch, a
 Features row and an online room key (`src/systems/editorMods.js`; Bunnyfall change 4 in
 [BUNNYFALL_CHANGES.md](BUNNYFALL_CHANGES.md)). The export refuses a folder holding files the editor did not write
 (another mod), and an id range another editor mod uses; it warns when two mods ship the same block file (Bunnyfall

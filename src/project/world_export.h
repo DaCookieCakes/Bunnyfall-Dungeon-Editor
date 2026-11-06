@@ -56,6 +56,10 @@ inline constexpr std::string_view kModManifestFormat = "bunnyfall-dungeon-mod/1"
 /// The mod's manifest: its title (the project's name), author, description and id range.
 exporter::Json modManifestJson(const Project& project);
 
+/// Writes the manifest if `modDir` has none, so a classic block saved before the first export is already a mod Bunnyfall
+/// has a switch for (it throws on a patch in a vendor folder it has no switch for). Refuses a folder another mod owns.
+Result<void> ensureModManifest(const Project& project, const std::filesystem::path& modDir);
+
 /// A mod the editor made, found beside the project's own.
 struct EditorMod {
     std::string folder;
