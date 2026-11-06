@@ -60,8 +60,8 @@ struct RdbFlat {
     std::uint8_t soundIndex = 0;
     std::int32_t nextObjectOffset = 0;
     std::uint8_t action = 0;
-    /// Bunnyfall only, never in BLOCKS.BSA: what a person flat is called and says, a line a press of Talk. Written as
-    /// the block JSON's BunnyfallPerson; both empty means an ordinary Daggerfall person.
+    /// Bunnyfall only, never in BLOCKS.BSA: what a flat is called and says, a line a press (a person's Talk, or reading a
+    /// scenery flat). Written as the block JSON's BunnyfallPerson; both empty means an ordinary Daggerfall flat.
     std::string personName;
     std::vector<std::string> personLines;
     [[nodiscard]] int textureArchive() const { return textureBitfield >> 7; }

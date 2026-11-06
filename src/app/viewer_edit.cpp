@@ -1133,7 +1133,7 @@ void Viewer::endTyping() {
     typingUndoStep_ = false;
 }
 
-bool Viewer::drawPersonWords(formats::RdbFlat& flat) {
+bool Viewer::drawFlatWords(formats::RdbFlat& flat, bool person) {
     // A text box typed in is one undo step, as a drag is. The next box's activation and this one's end come on different
     // frames, and a click on another object leaves no box to report the end at all, so drawUi closes the step.
     const auto typed = [&](const char* label, std::string& text, std::size_t maxChars) {
@@ -1151,9 +1151,10 @@ bool Viewer::drawPersonWords(formats::RdbFlat& flat) {
     };
 
     bool changed = false;
-    ImGui::SeparatorText("Talk");
+    ImGui::SeparatorText(person ? "Talk" : "Read");
     changed = typed("Name", flat.personName, edit::kPersonNameMax) || changed;
-    ImGui::SetItemTooltip("What they are called when looked at and talked to. Empty: the game names them.");
+    ImGui::SetItemTooltip(person ? "What they are called when looked at and talked to. Empty: the game names them."
+                                 : "What the label says when it is looked at (\"Torn Letter\"). Optional.");
     std::optional<std::size_t> removeLine;
     for (std::size_t i = 0; i < flat.personLines.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
@@ -1175,10 +1176,19 @@ bool Viewer::drawPersonWords(formats::RdbFlat& flat) {
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled("%zu of %zu", flat.personLines.size(), edit::kPersonLinesMax);
-    ImGui::TextDisabled(flat.personLines.empty() ? "No lines: they talk as Daggerfall's people do."
-                                                 : "Each Talk says the next line, looping.");
-    if (!flat.personLines.empty() && (flat.action == logic::action::kShowText || flat.action == logic::action::kShowTextWithInput)) {
-        ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "Their Show Text action runs instead:\nthese lines are never said.");
+    if (person) {
+        ImGui::TextDisabled(flat.personLines.empty() ? "No lines: they talk as Daggerfall's people do."
+                                                     : "Each Talk says the next line, looping.");
+    } else {
+        ImGui::TextDisabled(flat.personLines.empty() ? "No lines: just scenery. Add some to make it readable."
+                                                     : "Each click shows the next line, looping.");
+    }
+    if (!flat.personLines.empty()) {
+        if (person && (flat.action == logic::action::kShowText || flat.action == logic::action::kShowTextWithInput)) {
+            ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "Their Show Text action runs instead:\nthese lines are never said.");
+        } else if (!person && flat.action != 0) {
+            ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "Its action runs instead:\nthese lines are never shown.");
+        }
     }
     return changed;
 }
@@ -1288,7 +1298,7 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
                 }
                 ImGui::EndPopup();
             }
-            changed = drawPersonWords(*f) || changed;
+            changed = drawFlatWords(*f, true) || changed;
         }
         if (kind == edit::EntityKind::Scenery) {
             int archive = f->textureArchive(), record = f->textureRecord();
@@ -1308,6 +1318,7 @@ void Viewer::drawEditInspector(edit::ObjectSlot slot) {
                 }
                 ImGui::EndPopup();
             }
+            changed = drawFlatWords(*f, false) || changed;
         }
     } else if (auto* l = std::get_if<formats::RdbLight>(&obj.resource)) {
         int radius = l->radius;

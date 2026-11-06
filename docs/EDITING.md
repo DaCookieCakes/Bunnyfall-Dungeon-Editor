@@ -35,6 +35,10 @@ press **Edit** in the Edit panel). Then:
   no name means the game names them. This works on classic people in a block you edit too, but a quest's person speaks
   for the quest first, and a Show Text action on them runs instead (Properties warns). The words need change 7 in
   [BUNNYFALL_CHANGES.md](BUNNYFALL_CHANGES.md); Daggerfall Unity should ignore them and use its normal talk window.
+- **Notes and signs:** any **Scenery** flat can be read. In Properties (General), **Read** gives it up to 8 lines (each
+  click shows the next, then starts over) and an optional **Name**, the label shown when it is looked at. It stays
+  scenery: no person, no made-up name. A flat with an action of its own runs that instead (Properties warns). This needs
+  change 8 in [BUNNYFALL_CHANGES.md](BUNNYFALL_CHANGES.md); in Daggerfall Unity it should just be scenery.
 - **Select** with a left-click; double-click for Properties, whose General tab edits what it is (position, enemy
   type, gender, passive, slot, scenery picture, light radius; models turn in 90-degree steps).
 - **Several at once:** Shift+click adds, Ctrl+click toggles, a left-drag on empty space draws a box (Shift/Ctrl

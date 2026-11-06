@@ -301,8 +301,8 @@ private:
     bool sceneryPicker(int& archive, int& record);
     bool personPicker(int& archive, int& record);
     bool recordGrid(int archive, int& record);
-    /// The name and lines of a person, in Properties. True when they changed.
-    bool drawPersonWords(formats::RdbFlat& flat);
+    /// The name and lines of a person or a readable scenery flat, in Properties. True when they changed.
+    bool drawFlatWords(formats::RdbFlat& flat, bool person);
     /// Closes the undo step of a text box being typed in.
     void endTyping();
     /// Opens Properties floating beside `at` (a double-click), or brings it to the front where it is docked.

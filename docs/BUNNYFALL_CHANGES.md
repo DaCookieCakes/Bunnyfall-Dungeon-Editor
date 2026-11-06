@@ -106,7 +106,27 @@ sha256). The standalone `?dungeon` scene has its own NPC path and is not changed
 Checked: `npx eslint` clean on the five files, `npx vite build` passes, and under Node a patch the editor saved rebuilds
 over the real BLOCKS.BSA with a matching sha256, lays out with the person's words, and the lines cycle. Not yet seen in
 the game. That DFU ignores the field is from how its JSON reader is known to work, not tried. Not in a PR yet: uncommitted
-on the `dungeons` branch of the GitHub checkout.
+on the `dungeons` branch of the GitHub checkout. **Update:** merged as PR #10 (`editor-dialogue`).
+
+### 8. Flats that can be read (2026-11-06)
+
+Any scenery flat can have the same `BunnyfallPerson` words, for notes and signs. It stays scenery: no body, no faction, no
+made-up name. A press shows its next line with no name in front; a name, if given, is the hover label.
+
+| File | Change |
+|---|---|
+| `src/scenes/editorReadables.js` (new) | Builds a box for each flat with lines, gives the click targets and the label, and shows the next line. |
+| `src/world/rdbLayout.js` | Reads `BunnyfallPerson` on every ordinary flat, not only people. |
+| `src/scenes/dungeonContext.js` | Builds the list and exposes it as `editorReadables`. |
+| `src/scenes/worldModes.js` | Registers the targets and label with the other dungeon families, and answers a press before the person arm. |
+
+A flat that also has an action is left to the action. No new strings. The standalone `?dungeon` scene is not changed.
+
+Checked 2026-11-06 for changes 7 and 8: `npx eslint` clean, `npx vite build` passes, and in the real game (headless Chromium,
+a temporary mod patching Castle Kingwing's N0000034): a person with lines says them in order and loops with no talk
+window, Info says "You see Old Marta", a plain person opens the normal talk window, and a note shows its lines with no
+name in front, 240 characters wrapping whole. The patch was generated for that test, not exported by the editor; the
+editor's export of this field was checked separately against Bunnyfall's patch rebuild. Not in a PR yet.
 
 ## Still to make
 
